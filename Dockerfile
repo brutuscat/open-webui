@@ -134,6 +134,7 @@ RUN apt-get update && \
 
 # install python dependencies
 COPY --chown=$UID:$GID ./backend/requirements.txt ./requirements.txt
+COPY --chown=$UID:$GID ./backend/requirements-gpt-oss-harmony.txt ./requirements-gpt-oss-harmony.txt
 
 # Set UV_LINK_MODE to copy to prevent 0-byte file corruption in QEMU arm64 cross-builds
 ENV UV_LINK_MODE=copy
@@ -164,6 +165,12 @@ RUN set -e; \
     mkdir -p /app/backend/data; chown -R $UID:$GID /app/backend/data/; \
     if [ -d /app/backend/data/cache ]; then chmod -R a+rX /app/backend/data/cache; fi; \
     rm -rf /var/lib/apt/lists/*;
+
+# The Harmony adapter is opt-in at the model level, but its lightweight
+# dependencies must be present in this isolated image before the adapter can
+# be imported. Keep this separate from OpenWebUI's base requirements so the
+# patch is easy to remove when upstream gains equivalent support.
+RUN uv pip install --system -r requirements-gpt-oss-harmony.txt --no-cache-dir
 
 # Optional: PPTX parsing through unstructured may need spaCy's English model.
 # Keep this out of the default image to avoid the extra image bloat; deployments
