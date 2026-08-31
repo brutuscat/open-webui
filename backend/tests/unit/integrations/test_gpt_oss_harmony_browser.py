@@ -11,12 +11,14 @@ from open_webui.integrations.gpt_oss_harmony.browser_backend import (
 )
 from open_webui.integrations.gpt_oss_harmony.citations import browser_citation_sources
 from open_webui.integrations.gpt_oss_harmony.detection import (
+    CAPABILITY,
     enable_native_namespaces,
     is_native_harmony_model,
 )
 from open_webui.integrations.gpt_oss_harmony.dispatch import native_browser_tools
 from open_webui.integrations.gpt_oss_harmony.terminal import native_container_tools
 from open_webui.vendor.openai_gpt_oss_browser.simple_browser.page_contents import PageContents
+from open_webui.utils.tools import get_builtin_tools
 
 
 class Backend:
@@ -43,6 +45,54 @@ class Backend:
 
 
 class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_web_search_selects_native_browser_only_for_explicit_model(self):
+        config = {"web.search.enable": True}
+        native_tools = {"browser.search": {"spec": {"name": "browser.search"}}}
+        model = {
+            "info": {
+                "meta": {
+                    "capabilities": {"web_search": True, CAPABILITY: True},
+                    "builtinTools": {"web_search": True},
+                }
+            }
+        }
+        with patch(
+            "open_webui.utils.tools.Config.get_many", new=AsyncMock(return_value=config)
+        ), patch(
+            "open_webui.utils.tools.has_permission", new=AsyncMock(return_value=True)
+        ), patch(
+            "open_webui.utils.tools.native_browser_tools", return_value=native_tools
+        ) as browser_tools:
+            tools = await get_builtin_tools(
+                SimpleNamespace(state=SimpleNamespace()), {"__user__": {"id": "user-1"}}, {"web_search": True}, model
+            )
+
+        self.assertEqual(tools["browser.search"], native_tools["browser.search"])
+        self.assertFalse({"search_web", "fetch_url"}.intersection(tools))
+        browser_tools.assert_called_once()
+
+    async def test_web_search_keeps_generic_tools_for_ordinary_model(self):
+        config = {"web.search.enable": True}
+        model = {
+            "info": {
+                "meta": {
+                    "capabilities": {"web_search": True},
+                    "builtinTools": {"web_search": True},
+                }
+            }
+        }
+        with patch(
+            "open_webui.utils.tools.Config.get_many", new=AsyncMock(return_value=config)
+        ), patch(
+            "open_webui.utils.tools.has_permission", new=AsyncMock(return_value=True)
+        ), patch("open_webui.utils.tools.native_browser_tools") as browser_tools:
+            tools = await get_builtin_tools(
+                SimpleNamespace(state=SimpleNamespace()), {"__user__": {"id": "user-1"}}, {"web_search": True}, model
+            )
+
+        self.assertTrue({"search_web", "fetch_url"}.issubset(tools))
+        browser_tools.assert_not_called()
+
     async def test_search_open_find_uses_reference_cursor_state(self):
         browser = HarmonyBrowser(Backend())
         search = await browser.search("release notes")
