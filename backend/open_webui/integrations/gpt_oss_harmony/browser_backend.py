@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from aiohttp import ClientSession
@@ -27,17 +28,22 @@ class OpenWebUIBrowserBackend(Backend):
     source: str = "web"
     request: Any = chz.field(repr=False)
     user: dict[str, Any] = chz.field(repr=False)
+    metrics: dict[str, float] = chz.field(default_factory=dict, repr=False)
 
     async def search(
         self, query: str, topn: int, session: ClientSession
     ) -> PageContents:
         del session
-        raw = await search_web(
-            query=query,
-            count=topn,
-            __request__=self.request,
-            __user__=self.user,
-        )
+        started = time.perf_counter()
+        try:
+            raw = await search_web(
+                query=query,
+                count=topn,
+                __request__=self.request,
+                __user__=self.user,
+            )
+        finally:
+            self.metrics["backend_ms"] = round((time.perf_counter() - started) * 1000, 3)
         payload = JSONCodec.loads(raw)
         if isinstance(payload, dict) and payload.get("error"):
             raise BackendError(str(payload["error"]))
@@ -68,7 +74,11 @@ class OpenWebUIBrowserBackend(Backend):
         del session
         if url.startswith(VIEW_SOURCE_PREFIX):
             url = url[len(VIEW_SOURCE_PREFIX) :]
-        content = await fetch_url(url=url, __request__=self.request, __user__=self.user)
+        started = time.perf_counter()
+        try:
+            content = await fetch_url(url=url, __request__=self.request, __user__=self.user)
+        finally:
+            self.metrics["backend_ms"] = round((time.perf_counter() - started) * 1000, 3)
         if not isinstance(content, str):
             raise BackendError("OpenWebUI URL loader returned a non-text response")
         try:

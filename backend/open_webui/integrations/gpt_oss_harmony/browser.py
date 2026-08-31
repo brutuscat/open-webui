@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, AsyncIterator, Callable
 
 from open_webui.vendor.openai_gpt_oss_browser.simple_browser.simple_browser_tool import (
@@ -10,6 +11,7 @@ from open_webui.vendor.openai_gpt_oss_browser.simple_browser.simple_browser_tool
 )
 
 from .browser_backend import OpenWebUIBrowserBackend
+from .metrics import emit_native_tool_event
 
 MAX_CURSORS = 32
 MAX_STATE_BYTES = 20 * 1024 * 1024
@@ -48,16 +50,41 @@ class HarmonyBrowser:
         return await self._call(self.tool.find, pattern=pattern, cursor=cursor)
 
     async def _call(self, function: Callable[..., AsyncIterator[Any]], **kwargs: Any) -> str:
+        started = time.perf_counter()
+        tool_name = function.__name__
+        backend_metrics = getattr(self.tool.backend, "metrics", {})
+        backend_metrics.clear()
+        result = ""
+        success = False
         if kwargs.get("source") not in (None, "", "web"):
-            return "Error: only the configured OpenWebUI web source is available."
-        async with self.lock:
-            if len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
-                return f"Error: maximum browser cursor limit ({MAX_CURSORS}) reached."
-            messages = [message async for message in function(**kwargs)]
-            if self._state_bytes() > MAX_STATE_BYTES:
-                self._discard_last_page()
-                return "Error: browser response state exceeded its 20 MiB limit."
-        return self._message_text(messages[-1]) if messages else "Error: browser returned no result."
+            result = "Error: only the configured OpenWebUI web source is available."
+        else:
+            async with self.lock:
+                if len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
+                    result = f"Error: maximum browser cursor limit ({MAX_CURSORS}) reached."
+                else:
+                    messages = [message async for message in function(**kwargs)]
+                    if self._state_bytes() > MAX_STATE_BYTES:
+                        self._discard_last_page()
+                        result = "Error: browser response state exceeded its 20 MiB limit."
+                    else:
+                        result = self._message_text(messages[-1]) if messages else "Error: browser returned no result."
+            success = not result.startswith("Error:")
+        latency_ms = round((time.perf_counter() - started) * 1000, 3)
+        backend_ms = backend_metrics.get("backend_ms", 0.0)
+        emit_native_tool_event({
+            "namespace": "browser",
+            "tool": tool_name,
+            "success": success,
+            "latency_ms": latency_ms,
+            "adapter_ms": round(max(latency_ms - backend_ms, 0.0), 3),
+            "backend_ms": backend_ms,
+            "input_bytes": len(str(kwargs).encode("utf-8")),
+            "output_bytes": len(result.encode("utf-8")),
+            "cursor": self.tool.tool_state.current_cursor,
+            "cache_hit": False,
+        })
+        return result
 
     def _state_bytes(self) -> int:
         return sum(len(page.text.encode("utf-8")) for page in self.tool.tool_state.pages.values())
@@ -84,6 +111,6 @@ class HarmonyBrowser:
 def get_browser(request: Any, user: dict[str, Any]) -> HarmonyBrowser:
     browser = getattr(request.state, "gpt_oss_browser", None)
     if browser is None:
-        browser = HarmonyBrowser(OpenWebUIBrowserBackend(request=request, user=user))
+        browser = HarmonyBrowser(OpenWebUIBrowserBackend(request=request, user=user, metrics={}))
         request.state.gpt_oss_browser = browser
     return browser
