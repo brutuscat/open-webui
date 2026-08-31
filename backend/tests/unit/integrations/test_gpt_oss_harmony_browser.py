@@ -93,6 +93,29 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue({"search_web", "fetch_url"}.issubset(tools))
         browser_tools.assert_not_called()
 
+    async def test_web_search_off_hides_native_browser(self):
+        model = {
+            "info": {
+                "meta": {
+                    "capabilities": {"web_search": True, CAPABILITY: True},
+                    "builtinTools": {"web_search": True},
+                }
+            }
+        }
+        with patch(
+            "open_webui.utils.tools.Config.get_many",
+            new=AsyncMock(return_value={"web.search.enable": True}),
+        ), patch("open_webui.utils.tools.native_browser_tools") as browser_tools:
+            tools = await get_builtin_tools(
+                SimpleNamespace(state=SimpleNamespace()),
+                {"__user__": {"id": "user-1"}},
+                {"web_search": False},
+                model,
+            )
+
+        self.assertNotIn("browser.search", tools)
+        browser_tools.assert_not_called()
+
     async def test_search_open_find_uses_reference_cursor_state(self):
         browser = HarmonyBrowser(Backend())
         search = await browser.search("release notes")
