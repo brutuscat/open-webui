@@ -3,7 +3,11 @@ import shlex
 from types import SimpleNamespace
 
 from open_webui.integrations.gpt_oss_harmony.browser import HarmonyBrowser
-from open_webui.integrations.gpt_oss_harmony.detection import is_native_harmony_model
+from open_webui.integrations.gpt_oss_harmony.citations import browser_citation_sources
+from open_webui.integrations.gpt_oss_harmony.detection import (
+    enable_native_namespaces,
+    is_native_harmony_model,
+)
 from open_webui.integrations.gpt_oss_harmony.dispatch import native_browser_tools
 from open_webui.integrations.gpt_oss_harmony.terminal import native_container_tools
 from open_webui.vendor.openai_gpt_oss_browser.simple_browser.page_contents import PageContents
@@ -53,6 +57,14 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_native_namespaces_preserve_template_options(self):
+        form_data = {"chat_template_kwargs": {"reasoning_effort": "medium"}}
+        enable_native_namespaces(form_data, {"container", "browser"})
+        self.assertEqual(
+            form_data["chat_template_kwargs"],
+            {"reasoning_effort": "medium", "builtin_tools": ["browser", "container"]},
+        )
+
     def test_native_dispatch_entries_are_not_generic_tools(self):
         tools = native_browser_tools(SimpleNamespace(state=SimpleNamespace()), {})
         self.assertEqual(set(tools), {"browser.search", "browser.open", "browser.find"})
@@ -70,3 +82,29 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen, [shlex.join(["bash", "-lc", "printf 'ok'"])])
         self.assertIn('"exit_code":0', result.replace(" ", ""))
         self.assertEqual(native_container_tools({}), {})
+
+    async def test_container_exec_tolerates_aliases_without_advertising_them(self):
+        seen = []
+
+        async def run_command(command):
+            seen.append(command)
+            return "completed"
+
+        tool = native_container_tools({"run_command": {"callable": run_command}})["container.exec"]
+        self.assertEqual(tool["spec"]["parameters"]["required"], ["command"])
+        self.assertEqual(await tool["callable"](cmd=["bash", "-lc", "printf hello"]), "completed")
+        self.assertEqual(await tool["callable"](commands="pwd"), "completed")
+        self.assertEqual(seen, ["bash -lc 'printf hello'", "pwd"])
+        self.assertIn("requires command", await tool["callable"]())
+        self.assertIn("non-empty", await tool["callable"](command=[]))
+
+    async def test_browser_results_emit_source_cards(self):
+        browser = HarmonyBrowser(Backend())
+        request = SimpleNamespace(state=SimpleNamespace(gpt_oss_browser=browser))
+        search = await browser.search("release notes")
+        search_sources = browser_citation_sources(request, "browser.search", search)
+        self.assertEqual(search_sources[0]["metadata"][0]["url"], "https://example.test/article")
+
+        opened = await browser.open(cursor=0, id=0)
+        open_sources = browser_citation_sources(request, "browser.open", opened)
+        self.assertEqual(open_sources[0]["metadata"][0]["url"], "https://example.test/article")
