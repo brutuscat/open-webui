@@ -1,7 +1,9 @@
 import unittest
+from types import SimpleNamespace
 
 from open_webui.integrations.gpt_oss_harmony.browser import HarmonyBrowser
 from open_webui.integrations.gpt_oss_harmony.detection import is_native_harmony_model
+from open_webui.integrations.gpt_oss_harmony.dispatch import native_browser_tools
 from open_webui.vendor.openai_gpt_oss_browser.simple_browser.page_contents import PageContents
 
 
@@ -48,3 +50,8 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
                 {"info": {"meta": {"capabilities": {"gpt_oss_harmony_native_tools": True}}}}
             )
         )
+
+    def test_native_dispatch_entries_are_not_generic_tools(self):
+        tools = native_browser_tools(SimpleNamespace(state=SimpleNamespace()), {})
+        self.assertEqual(set(tools), {"browser.search", "browser.open", "browser.find"})
+        self.assertTrue(all(tool["native_harmony_hidden"] for tool in tools.values()))
