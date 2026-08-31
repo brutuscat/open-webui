@@ -3,7 +3,7 @@ import shlex
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from open_webui.integrations.gpt_oss_harmony.browser import HarmonyBrowser
+from open_webui.integrations.gpt_oss_harmony.browser import MAX_CURSORS, MAX_STATE_BYTES, HarmonyBrowser
 from open_webui.integrations.gpt_oss_harmony.browser_backend import (
     BackendError,
     OpenWebUIBrowserBackend,
@@ -127,6 +127,19 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
 
         found = await browser.find("release", cursor=1)
         self.assertIn("match at L1", found)
+
+    async def test_browser_enforces_cursor_limit(self):
+        browser = HarmonyBrowser(Backend())
+        browser.tool.tool_state.page_stack.extend(["https://example.test"] * MAX_CURSORS)
+        result = await browser.search("release notes")
+        self.assertIn("maximum browser cursor limit", result)
+
+    async def test_browser_discards_oversized_response_state(self):
+        browser = HarmonyBrowser(Backend())
+        with patch.object(browser, "_state_bytes", return_value=MAX_STATE_BYTES + 1):
+            result = await browser.search("release notes")
+        self.assertIn("state exceeded", result)
+        self.assertEqual(browser.tool.tool_state.page_stack, [])
 
     def test_capability_is_explicit(self):
         self.assertFalse(is_native_harmony_model({"id": "gpt-oss-20b"}))
