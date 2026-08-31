@@ -122,6 +122,8 @@ from open_webui.utils.misc import (
     strip_empty_content_blocks,
 )
 from open_webui.utils.payload import apply_params_to_form_data, apply_system_prompt_to_body, resolve_system_prompt
+from open_webui.integrations.gpt_oss_harmony.detection import enable_browser_namespace, is_native_harmony_model
+from open_webui.integrations.gpt_oss_harmony.citations import browser_citation_sources
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.response import merge_usage, normalize_usage
 from open_webui.utils.sanitize import sanitize_code
@@ -3027,6 +3029,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data['tools'] = [
                     {'type': 'function', 'function': tool.get('spec', {})} for tool in tools_dict.values()
                 ]
+                if is_native_harmony_model(model) and any(name.startswith('browser.') for name in tools_dict):
+                    enable_browser_namespace(form_data)
                 if inlet_filter_tools:
                     form_data['tools'].extend(inlet_filter_tools)
             else:
@@ -5722,6 +5726,8 @@ async def streaming_chat_response_handler(response, ctx):
                             in [
                                 'search_web',
                                 'fetch_url',
+                                'browser.search',
+                                'browser.open',
                                 'view_file',
                                 'view_knowledge_file',
                                 'query_knowledge_files',
@@ -5730,11 +5736,15 @@ async def streaming_chat_response_handler(response, ctx):
                             and tool_result
                         ):
                             try:
-                                citation_sources = get_citation_source_from_tool_result(
-                                    tool_name=tool_function_name,
-                                    tool_params=tool_function_params,
-                                    tool_result=tool_result,
-                                    tool_id=tool.get('tool_id', '') if tool else '',
+                                citation_sources = (
+                                    browser_citation_sources(request, tool_function_name, tool_result)
+                                    if tool_function_name.startswith('browser.')
+                                    else get_citation_source_from_tool_result(
+                                        tool_name=tool_function_name,
+                                        tool_params=tool_function_params,
+                                        tool_result=tool_result,
+                                        tool_id=tool.get('tool_id', '') if tool else '',
+                                    )
                                 )
                                 tool_call_sources.extend(citation_sources)
                             except Exception as e:

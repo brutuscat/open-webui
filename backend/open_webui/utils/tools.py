@@ -118,6 +118,8 @@ from open_webui.utils.terminals import (
     terminal_context_config,
     terminal_context_id,
 )
+from open_webui.integrations.gpt_oss_harmony.detection import is_native_harmony_model
+from open_webui.integrations.gpt_oss_harmony.dispatch import native_browser_tools
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
@@ -674,7 +676,8 @@ async def get_builtin_tools(
             ]
         )
 
-    # Add web search tools if builtin category enabled AND enabled globally AND model has web_search capability
+    # GPT-OSS native mode replaces ordinary web tools with the Harmony browser
+    # namespace. The same availability and permission checks remain in force.
     if (
         is_builtin_tool_enabled('web_search')
         and config.get('web.search.enable')
@@ -682,7 +685,10 @@ async def get_builtin_tools(
         and features.get('web_search')
         and await has_user_permission('web_search')
     ):
-        builtin_functions.extend([search_web, fetch_url])
+        if is_native_harmony_model(model):
+            tools_dict.update(native_browser_tools(request, user))
+        else:
+            builtin_functions.extend([search_web, fetch_url])
 
     # Add image generation/edit tools if builtin category enabled,
     # globally enabled, and allowed by model capability.
