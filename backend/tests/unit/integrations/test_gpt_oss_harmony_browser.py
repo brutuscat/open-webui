@@ -1,8 +1,14 @@
 import unittest
 import shlex
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from open_webui.integrations.gpt_oss_harmony.browser import HarmonyBrowser
+from open_webui.integrations.gpt_oss_harmony.browser_backend import (
+    BackendError,
+    OpenWebUIBrowserBackend,
+    VIEW_SOURCE_PREFIX,
+)
 from open_webui.integrations.gpt_oss_harmony.citations import browser_citation_sources
 from open_webui.integrations.gpt_oss_harmony.detection import (
     enable_native_namespaces,
@@ -108,3 +114,38 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
         opened = await browser.open(cursor=0, id=0)
         open_sources = browser_citation_sources(request, "browser.open", opened)
         self.assertEqual(open_sources[0]["metadata"][0]["url"], "https://example.test/article")
+
+    async def test_openwebui_backend_reuses_search_and_fetch_tools(self):
+        request = SimpleNamespace()
+        user = {"id": "user-1"}
+        backend = OpenWebUIBrowserBackend(request=request, user=user, metrics={})
+        search_result = '[{"title":"Example","link":"https://example.test/a","snippet":"Snippet"}]'
+        with patch(
+            "open_webui.integrations.gpt_oss_harmony.browser_backend.search_web",
+            new=AsyncMock(return_value=search_result),
+        ) as search_web, patch(
+            "open_webui.integrations.gpt_oss_harmony.browser_backend.fetch_url",
+            new=AsyncMock(return_value="Extracted page"),
+        ) as fetch_url:
+            search = await backend.search("release notes", 3, None)
+            page = await backend.fetch(VIEW_SOURCE_PREFIX + "https://example.test/a", None)
+
+        search_web.assert_awaited_once_with(
+            query="release notes", count=3, __request__=request, __user__=user
+        )
+        fetch_url.assert_awaited_once_with(
+            url="https://example.test/a", __request__=request, __user__=user
+        )
+        self.assertEqual(search.urls, {"0": "https://example.test/a"})
+        self.assertIn("【0†Example】", search.text)
+        self.assertEqual(page.text, "Extracted page")
+        self.assertGreaterEqual(backend.metrics["backend_ms"], 0)
+
+    async def test_openwebui_backend_surfaces_existing_tool_errors(self):
+        backend = OpenWebUIBrowserBackend(request=SimpleNamespace(), user={}, metrics={})
+        with patch(
+            "open_webui.integrations.gpt_oss_harmony.browser_backend.search_web",
+            new=AsyncMock(return_value='{"error":"provider unavailable"}'),
+        ):
+            with self.assertRaisesRegex(BackendError, "provider unavailable"):
+                await backend.search("release notes", 3, None)
