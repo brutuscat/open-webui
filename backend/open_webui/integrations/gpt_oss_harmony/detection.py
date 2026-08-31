@@ -13,9 +13,8 @@ def is_native_harmony_model(model: dict[str, Any] | None) -> bool:
     return capabilities.get(CAPABILITY) is True
 
 
-def enable_browser_namespace(form_data: dict[str, Any]) -> None:
-    """Ask the GPT-OSS template to declare only its native browser namespace."""
+def enable_native_namespaces(form_data: dict[str, Any], namespaces: set[str]) -> None:
+    """Ask the GPT-OSS template to declare the enabled native namespaces."""
     kwargs = dict(form_data.get("chat_template_kwargs") or {})
-    kwargs["builtin_tools"] = ["browser"]
+    kwargs["builtin_tools"] = sorted(namespaces)
     form_data["chat_template_kwargs"] = kwargs
-

@@ -122,8 +122,9 @@ from open_webui.utils.misc import (
     strip_empty_content_blocks,
 )
 from open_webui.utils.payload import apply_params_to_form_data, apply_system_prompt_to_body, resolve_system_prompt
-from open_webui.integrations.gpt_oss_harmony.detection import enable_browser_namespace, is_native_harmony_model
+from open_webui.integrations.gpt_oss_harmony.detection import enable_native_namespaces, is_native_harmony_model
 from open_webui.integrations.gpt_oss_harmony.citations import browser_citation_sources
+from open_webui.integrations.gpt_oss_harmony.terminal import native_container_tools
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.response import merge_usage, normalize_usage
 from open_webui.utils.sanitize import sanitize_code
@@ -2942,6 +2943,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     terminal_tools = terminal_result
                     system_prompt = None
                 if terminal_tools:
+                    if is_native_harmony_model(model):
+                        native_container = native_container_tools(terminal_tools)
+                        if native_container:
+                            terminal_tools.pop('run_command', None)
+                            terminal_tools = {**terminal_tools, **native_container}
                     tools_dict = {**tools_dict, **terminal_tools}
                 if system_prompt:
                     form_data['messages'] = add_or_update_system_message(
@@ -3029,8 +3035,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data['tools'] = [
                     {'type': 'function', 'function': tool.get('spec', {})} for tool in tools_dict.values()
                 ]
-                if is_native_harmony_model(model) and any(name.startswith('browser.') for name in tools_dict):
-                    enable_browser_namespace(form_data)
+                if is_native_harmony_model(model):
+                    namespaces = {name.split('.', 1)[0] for name in tools_dict if name.startswith(('browser.', 'container.'))}
+                    if namespaces:
+                        enable_native_namespaces(form_data, namespaces)
                 if inlet_filter_tools:
                     form_data['tools'].extend(inlet_filter_tools)
             else:
