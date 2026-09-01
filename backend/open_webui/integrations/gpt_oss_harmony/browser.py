@@ -58,26 +58,29 @@ class HarmonyBrowser:
         backend_metrics.clear()
         result = ""
         success = False
-        if kwargs.get("source") not in (None, "", "web"):
-            result = "Error: only the configured OpenWebUI web source is available."
-        else:
-            async with self.lock:
-                if len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
-                    result = f"Error: maximum browser cursor limit ({MAX_CURSORS}) reached."
-                elif self.call_count >= MAX_BROWSER_CALLS:
-                    result = (
-                        f"Error: maximum browser call limit ({MAX_BROWSER_CALLS}) reached. "
-                        "Do not call the browser again; answer using the sources already retrieved."
-                    )
+        # The reference surface accepts ``source`` but this deployment deliberately
+        # exposes exactly one backend: OpenWebUI's configured web provider.  Normalise
+        # model-supplied source labels rather than reject them and trigger retry loops.
+        if "source" in kwargs:
+            kwargs["source"] = None
+        async with self.lock:
+            if len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
+                result = f"Error: maximum browser cursor limit ({MAX_CURSORS}) reached."
+            elif self.call_count >= MAX_BROWSER_CALLS:
+                result = (
+                    f"Error: maximum browser call limit ({MAX_BROWSER_CALLS}) reached. "
+                    "Do not call the browser again; answer using the sources already retrieved."
+                )
+            else:
+                self.call_count += 1
+                messages = [message async for message in function(**kwargs)]
+                if self._state_bytes() > MAX_STATE_BYTES:
+                    self._discard_last_page()
+                    result = "Error: browser response state exceeded its 20 MiB limit."
                 else:
-                    self.call_count += 1
-                    messages = [message async for message in function(**kwargs)]
-                    if self._state_bytes() > MAX_STATE_BYTES:
-                        self._discard_last_page()
-                        result = "Error: browser response state exceeded its 20 MiB limit."
-                    else:
-                        result = self._message_text(messages[-1]) if messages else "Error: browser returned no result."
-            success = not result.startswith("Error:")
+                    result = self._message_text(messages[-1]) if messages else "Error: browser returned no result."
+        result = self._with_citation_reminder(tool_name, result)
+        success = not result.startswith("Error:")
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
         backend_ms = backend_metrics.get("backend_ms", 0.0)
         emit_native_tool_event({
@@ -93,6 +96,19 @@ class HarmonyBrowser:
             "cache_hit": False,
         })
         return result
+
+    def _with_citation_reminder(self, tool_name: str, result: str) -> str:
+        if tool_name not in {"open", "find"} or result.startswith("Error:"):
+            return result
+
+        cursor = self.tool.tool_state.current_cursor
+        if cursor < 0:
+            return result
+
+        return (
+            f"{result}\n\nCitation reminder: cite inspected lines in the final answer as "
+            f"【{cursor}†Lstart-Lend】."
+        )
 
     def _state_bytes(self) -> int:
         return sum(len(page.text.encode("utf-8")) for page in self.tool.tool_state.pages.values())

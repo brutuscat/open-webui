@@ -129,9 +129,18 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
         opened = await browser.open(cursor=0, id=0, loc=1, num_lines=1)
         self.assertIn("[1]", opened)
         self.assertIn("L1: release note", opened)
+        self.assertIn("【1†Lstart-Lend】", opened)
 
         found = await browser.find("release", cursor=1)
         self.assertIn("match at L1", found)
+        self.assertIn("【2†Lstart-Lend】", found)
+
+    async def test_search_routes_source_aliases_to_the_configured_backend(self):
+        browser = HarmonyBrowser(Backend())
+
+        result = await browser.search("release notes", source="news")
+
+        self.assertIn("【0†Example】", result)
 
     async def test_browser_enforces_cursor_limit(self):
         browser = HarmonyBrowser(Backend())
