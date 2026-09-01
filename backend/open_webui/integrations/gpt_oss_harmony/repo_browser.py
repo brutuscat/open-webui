@@ -347,7 +347,7 @@ def native_repo_browser_tools(
             command = _bash(root, f"printf %s {shlex.quote(encoded_patch)} | base64 -d | apply_patch")
             return await _execute(runner, "apply_patch", command, len(safe_patch.encode("utf-8")))
 
-        tools["repo_browser.apply_patch"] = _entry(
+        patch_entry = _entry(
             runner,
             "repo_browser.apply_patch",
             "Patch a file",
@@ -363,5 +363,13 @@ def native_repo_browser_tools(
             },
             apply_patch,
         )
+        tools["repo_browser.apply_patch"] = patch_entry
+        # GPT-OSS also exposes apply_patch as a top-level recipient.  It is an
+        # alias, not a second executor: both names share the same root checks,
+        # helper image, selected terminal, and response handling.
+        tools["apply_patch"] = {
+            **patch_entry,
+            "spec": {**patch_entry["spec"], "name": "apply_patch"},
+        }
 
     return tools

@@ -120,6 +120,7 @@ from open_webui.utils.terminals import (
 )
 from open_webui.integrations.gpt_oss_harmony.detection import is_native_harmony_model
 from open_webui.integrations.gpt_oss_harmony.dispatch import native_browser_tools
+from open_webui.integrations.gpt_oss_harmony.python import jupyter_python_enabled, native_python_tools
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
@@ -550,6 +551,10 @@ async def get_builtin_tools(
         'image_generation.enable',
         'images.edit.enable',
         'code_interpreter.enable',
+        'code_interpreter.engine',
+        'code_interpreter.jupyter.url',
+        'code_interpreter.jupyter.auth',
+        'code_interpreter.jupyter.auth_token',
         'notes.enable',
         'channels.enable',
         'automations.enable',
@@ -718,7 +723,8 @@ async def get_builtin_tools(
         and features.get('code_interpreter')
         and await has_user_permission('code_interpreter')
     ):
-        builtin_functions.append(execute_code)
+        if not is_native_harmony_model(model) or jupyter_python_enabled(config):
+            builtin_functions.append(execute_code)
 
     # Notes tools - search, view, create, and update user's notes
     if is_note_chat or (
@@ -798,12 +804,16 @@ async def get_builtin_tools(
             if isinstance(parameters.get('required'), list):
                 parameters['required'] = [name for name in parameters['required'] if name != 'background']
 
-        tools_dict[func.__name__] = {
+        tool_entry = {
             'tool_id': f'builtin:{func.__name__}',
             'callable': callable,
             'spec': spec,
             'type': 'builtin',
         }
+        if func.__name__ == 'execute_code' and is_native_harmony_model(model):
+            tools_dict.update(native_python_tools(tool_entry))
+        else:
+            tools_dict[func.__name__] = tool_entry
 
     return tools_dict
 

@@ -3038,7 +3038,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     {'type': 'function', 'function': tool.get('spec', {})} for tool in tools_dict.values()
                 ]
                 if is_native_harmony_model(model):
-                    namespaces = {name.split('.', 1)[0] for name in tools_dict if name.startswith(('browser.', 'container.', 'repo_browser.'))}
+                    namespaces = {
+                        name.split('.', 1)[0]
+                        for name in tools_dict
+                        if name.startswith(('browser.', 'container.', 'repo_browser.'))
+                        or name in {'python', 'apply_patch'}
+                    }
                     if namespaces:
                         enable_native_namespaces(form_data, namespaces)
                 if inlet_filter_tools:

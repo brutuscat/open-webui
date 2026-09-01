@@ -56,6 +56,7 @@ class RepoBrowserTests(unittest.IsolatedAsyncioTestCase):
                 "repo_browser.open_file",
                 "repo_browser.list_dir",
                 "repo_browser.apply_patch",
+                "apply_patch",
             },
         )
         self.assertEqual(tools["repo_browser.print_tree"]["spec"]["parameters"]["required"], ["path", "depth"])
@@ -66,7 +67,7 @@ class RepoBrowserTests(unittest.IsolatedAsyncioTestCase):
             all(
                 tools[name]["spec"]["parameters"].get("additionalProperties") is False
                 for name in tools
-                if name != "repo_browser.apply_patch"
+                if name not in {"repo_browser.apply_patch", "apply_patch"}
             )
         )
         self.assertEqual(
@@ -76,6 +77,8 @@ class RepoBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("required", tools["repo_browser.apply_patch"]["spec"]["parameters"])
         self.assertNotIn("additionalProperties", tools["repo_browser.apply_patch"]["spec"]["parameters"])
         self.assertIn("*** Begin Patch", tools["repo_browser.apply_patch"]["spec"]["parameters"]["properties"]["patch"]["default"])
+        self.assertEqual(tools["apply_patch"]["spec"]["name"], "apply_patch")
+        self.assertIs(tools["apply_patch"]["callable"], tools["repo_browser.apply_patch"]["callable"])
         self.assertTrue(all(tool["native_harmony_hidden"] for tool in tools.values()))
 
         form_data = {"chat_template_kwargs": {"reasoning_effort": "medium"}}
@@ -142,6 +145,9 @@ class RepoBrowserTests(unittest.IsolatedAsyncioTestCase):
             await tools["repo_browser.list_dir"]["callable"](path=".."),
             await tools["repo_browser.apply_patch"]["callable"](
                 patch="*** Begin Patch\n*** Add File: ../outside.txt\n+blocked\n*** End Patch\n"
+            ),
+            await tools["apply_patch"]["callable"](
+                patch="*** Begin Patch\n*** Add File: ../outside-alias.txt\n+blocked\n*** End Patch\n"
             ),
         ]
 
