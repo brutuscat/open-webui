@@ -1464,6 +1464,10 @@ async def get_terminal_tools(
             'callable': callable,
             'spec': tool_spec,
             'type': 'terminal',
+            # Kept out of the exposed tool schema. Native repo_browser uses this
+            # value only to require an exact match with its explicit repository
+            # allow-list; it never reads the host filesystem itself.
+            'terminal_cwd': terminal_cwd,
         }
 
     return tools_dict, system_prompt

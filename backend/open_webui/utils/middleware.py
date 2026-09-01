@@ -124,6 +124,7 @@ from open_webui.utils.misc import (
 from open_webui.utils.payload import apply_params_to_form_data, apply_system_prompt_to_body, resolve_system_prompt
 from open_webui.integrations.gpt_oss_harmony.detection import enable_native_namespaces, is_native_harmony_model
 from open_webui.integrations.gpt_oss_harmony.citations import browser_citation_sources
+from open_webui.integrations.gpt_oss_harmony.repo_browser import native_repo_browser_tools
 from open_webui.integrations.gpt_oss_harmony.terminal import native_container_tools
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.response import merge_usage, normalize_usage
@@ -2945,9 +2946,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 if terminal_tools:
                     if is_native_harmony_model(model):
                         native_container = native_container_tools(terminal_tools)
-                        if native_container:
+                        native_repo_browser = native_repo_browser_tools(terminal_tools)
+                        if native_container or native_repo_browser:
                             terminal_tools.pop('run_command', None)
-                            terminal_tools = {**terminal_tools, **native_container}
+                            terminal_tools = {**terminal_tools, **native_container, **native_repo_browser}
                     tools_dict = {**tools_dict, **terminal_tools}
                 if system_prompt:
                     form_data['messages'] = add_or_update_system_message(
@@ -3036,7 +3038,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     {'type': 'function', 'function': tool.get('spec', {})} for tool in tools_dict.values()
                 ]
                 if is_native_harmony_model(model):
-                    namespaces = {name.split('.', 1)[0] for name in tools_dict if name.startswith(('browser.', 'container.'))}
+                    namespaces = {name.split('.', 1)[0] for name in tools_dict if name.startswith(('browser.', 'container.', 'repo_browser.'))}
                     if namespaces:
                         enable_native_namespaces(form_data, namespaces)
                 if inlet_filter_tools:
