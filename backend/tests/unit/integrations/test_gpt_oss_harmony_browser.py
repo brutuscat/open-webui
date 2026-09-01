@@ -3,7 +3,12 @@ import shlex
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from open_webui.integrations.gpt_oss_harmony.browser import MAX_CURSORS, MAX_STATE_BYTES, HarmonyBrowser
+from open_webui.integrations.gpt_oss_harmony.browser import (
+    MAX_BROWSER_CALLS,
+    MAX_CURSORS,
+    MAX_STATE_BYTES,
+    HarmonyBrowser,
+)
 from open_webui.integrations.gpt_oss_harmony.browser_backend import (
     BackendError,
     OpenWebUIBrowserBackend,
@@ -133,6 +138,13 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
         browser.tool.tool_state.page_stack.extend(["https://example.test"] * MAX_CURSORS)
         result = await browser.search("release notes")
         self.assertIn("maximum browser cursor limit", result)
+
+    async def test_browser_enforces_call_limit(self):
+        browser = HarmonyBrowser(Backend())
+        browser.call_count = MAX_BROWSER_CALLS
+        result = await browser.search("release notes")
+        self.assertIn("maximum browser call limit", result)
+        self.assertIn("Do not call the browser again", result)
 
     async def test_browser_discards_oversized_response_state(self):
         browser = HarmonyBrowser(Backend())

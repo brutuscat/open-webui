@@ -15,6 +15,7 @@ from .metrics import emit_native_tool_event
 
 MAX_CURSORS = 32
 MAX_STATE_BYTES = 20 * 1024 * 1024
+MAX_BROWSER_CALLS = 16
 
 
 class HarmonyBrowser:
@@ -23,6 +24,7 @@ class HarmonyBrowser:
     def __init__(self, backend: OpenWebUIBrowserBackend) -> None:
         self.tool = SimpleBrowserTool(backend=backend)
         self.lock = asyncio.Lock()
+        self.call_count = 0
 
     async def search(self, query: str, topn: int = 10, source: str | None = None) -> str:
         return await self._call(self.tool.search, source=source, query=query, topn=topn)
@@ -62,7 +64,13 @@ class HarmonyBrowser:
             async with self.lock:
                 if len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
                     result = f"Error: maximum browser cursor limit ({MAX_CURSORS}) reached."
+                elif self.call_count >= MAX_BROWSER_CALLS:
+                    result = (
+                        f"Error: maximum browser call limit ({MAX_BROWSER_CALLS}) reached. "
+                        "Do not call the browser again; answer using the sources already retrieved."
+                    )
                 else:
+                    self.call_count += 1
                     messages = [message async for message in function(**kwargs)]
                     if self._state_bytes() > MAX_STATE_BYTES:
                         self._discard_last_page()
