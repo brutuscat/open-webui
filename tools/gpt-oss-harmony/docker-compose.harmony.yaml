@@ -1,0 +1,52 @@
+services:
+  open-webui-harmony:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: local/openwebui-gpt-oss-harmony:dev
+    container_name: openwebui-gpt-oss-harmony
+    ports:
+      - "127.0.0.1:${HARMONY_OPENWEBUI_PORT:-3002}:8080"
+    environment:
+      OPENAI_API_BASE_URLS: "http://host.docker.internal:8082/v1"
+      OPENAI_API_KEYS: "${HARMONY_LLAMA_API_KEY:-}"
+      WEBUI_SECRET_KEY: "${HARMONY_WEBUI_SECRET_KEY:-}"
+      ENABLE_OLLAMA_API: "false"
+      SCARF_NO_ANALYTICS: "true"
+      DO_NOT_TRACK: "true"
+      ANONYMIZED_TELEMETRY: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - open-webui-harmony-data:/app/backend/data
+    networks:
+      - default
+      - harmony-terminal
+    restart: "no"
+
+  open-terminal-harmony:
+    image: ghcr.io/open-webui/open-terminal@sha256:819010cb421a748a50f51ce6e2b52e1fbff9ed89c6886451056e014591fa8863
+    container_name: open-terminal-gpt-oss-harmony
+    environment:
+      OPEN_TERMINAL_API_KEY: "${HARMONY_OPEN_TERMINAL_API_KEY:?set a local isolated terminal API key}"
+      OPEN_TERMINAL_FILE_BROWSER_ROOT: "/home/user"
+      OPEN_TERMINAL_MAX_LOG_SIZE: "${HARMONY_OPEN_TERMINAL_MAX_LOG_SIZE:-1048576}"
+    volumes:
+      - open-terminal-harmony-home:/home/user
+    working_dir: /home/user
+    networks:
+      - harmony-terminal
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+volumes:
+  open-webui-harmony-data: {}
+  open-terminal-harmony-home: {}
+
+networks:
+  harmony-terminal:
+    internal: true

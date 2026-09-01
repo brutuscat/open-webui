@@ -1,0 +1,16 @@
+# Optional P1 overlay: a private named-volume repository only.
+# Combine with docker-compose.harmony.yaml after choosing this scope.
+services:
+  open-webui-harmony:
+    environment:
+      HARMONY_REPO_BROWSER_ROOT: "${HARMONY_REPO_BROWSER_ROOT:?set an isolated /home/user workspace path}"
+      HARMONY_REPO_BROWSER_APPLY_PATCH: "true"
+
+  open-terminal-harmony:
+    build:
+      context: ./open-terminal
+      dockerfile: Dockerfile
+    image: local/open-terminal-gpt-oss-harmony-repo-browser:dev
+    environment:
+      OPEN_TERMINAL_FILE_BROWSER_ROOT: "${HARMONY_REPO_BROWSER_ROOT:?set an isolated /home/user workspace path}"
+    working_dir: "${HARMONY_REPO_BROWSER_ROOT:?set an isolated /home/user workspace path}"
