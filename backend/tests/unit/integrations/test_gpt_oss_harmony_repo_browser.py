@@ -1,9 +1,11 @@
+import inspect
 import json
 import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
 from open_webui.integrations.gpt_oss_harmony.detection import enable_native_namespaces
+from open_webui.integrations.gpt_oss_harmony import repo_browser
 from open_webui.integrations.gpt_oss_harmony.repo_browser import native_repo_browser_tools
 
 
@@ -20,6 +22,14 @@ class RepoBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(native_repo_browser_tools(self._terminal_tools(runner), repository_root=None), {})
         self.assertEqual(native_repo_browser_tools(self._terminal_tools(runner), repository_root="relative"), {})
         self.assertEqual(native_repo_browser_tools(self._terminal_tools(runner, cwd="/other"), repository_root="/repo"), {})
+
+    async def test_adapter_has_no_openwebui_subprocess_or_filesystem_execution_path(self):
+        source = inspect.getsource(repo_browser)
+
+        self.assertNotIn("subprocess", source)
+        self.assertNotIn("os.system", source)
+        self.assertNotIn("os.popen", source)
+        self.assertNotIn("from pathlib import Path", source)
 
     async def test_runtime_configuration_requires_the_selected_terminal_workspace(self):
         async def runner(**kwargs):
