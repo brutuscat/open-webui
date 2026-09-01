@@ -165,30 +165,93 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
     async def test_container_exec_reuses_terminal_runner(self):
         seen = []
 
-        async def run_command(command):
-            seen.append(command)
+        async def run_command(**kwargs):
+            seen.append(kwargs)
             return {"stdout": "ok", "exit_code": 0}
 
         tools = native_container_tools({"run_command": {"tool_id": "terminal:chosen", "callable": run_command}})
         result = await tools["container.exec"]["callable"](command=["bash", "-lc", "printf 'ok'"])
-        self.assertEqual(seen, [shlex.join(["bash", "-lc", "printf 'ok'"])])
+        self.assertEqual(
+            seen,
+            [{"command": shlex.join(["bash", "-lc", "printf 'ok'"]), "wait": 30, "tail": 200}],
+        )
         self.assertIn('"exit_code":0', result.replace(" ", ""))
         self.assertEqual(native_container_tools({}), {})
 
     async def test_container_exec_tolerates_aliases_without_advertising_them(self):
         seen = []
 
-        async def run_command(command):
-            seen.append(command)
+        async def run_command(**kwargs):
+            seen.append(kwargs)
             return "completed"
 
         tool = native_container_tools({"run_command": {"callable": run_command}})["container.exec"]
         self.assertEqual(tool["spec"]["parameters"]["required"], ["command"])
         self.assertEqual(await tool["callable"](cmd=["bash", "-lc", "printf hello"]), "completed")
         self.assertEqual(await tool["callable"](commands="pwd"), "completed")
-        self.assertEqual(seen, ["bash -lc 'printf hello'", "pwd"])
+        self.assertEqual(
+            seen,
+            [
+                {"command": "bash -lc 'printf hello'", "wait": 30, "tail": 200},
+                {"command": "pwd", "wait": 30, "tail": 200},
+            ],
+        )
         self.assertIn("requires command", await tool["callable"]())
         self.assertIn("non-empty", await tool["callable"](command=[]))
+
+    async def test_container_exec_preserves_terminal_response_headers(self):
+        terminal_response = ({"stdout": "HARMONY_TERMINAL_OK", "exit_code": 0}, {"content-type": "application/json"})
+
+        async def run_command(**kwargs):
+            return terminal_response
+
+        tool = native_container_tools({"run_command": {"callable": run_command}})["container.exec"]
+        self.assertIs(await tool["callable"](command=["printf", "HARMONY_TERMINAL_OK"]), terminal_response)
+
+    async def test_container_exec_emits_safe_execution_metadata(self):
+        terminal_response = ({"stdout": "ok", "stderr": "failed", "exit_code": 7}, {"content-type": "application/json"})
+
+        async def run_command(**kwargs):
+            return terminal_response
+
+        tool = native_container_tools({"run_command": {"callable": run_command}})["container.exec"]
+        with patch("open_webui.integrations.gpt_oss_harmony.terminal.emit_native_tool_event") as emit:
+            self.assertIs(await tool["callable"](command=["sh", "-lc", "exit 7"]), terminal_response)
+
+        event = emit.call_args.args[0]
+        self.assertEqual(event["namespace"], "container")
+        self.assertFalse(event["success"])
+        self.assertEqual(event["exit_code"], 7)
+        self.assertFalse(event["output_truncated"])
+        self.assertNotIn("command", event)
+        self.assertNotIn("stdout", event)
+        self.assertNotIn("stderr", event)
+
+    async def test_container_exec_falls_back_for_older_terminal_schemas(self):
+        seen = []
+
+        async def run_command(command):
+            seen.append(command)
+            return {"status": "done", "exit_code": 0, "output": []}
+
+        tool = native_container_tools({"run_command": {"callable": run_command}})["container.exec"]
+        self.assertIn('"exit_code": 0', await tool["callable"](command=["printf", "ok"]))
+        self.assertEqual(seen, ["printf ok"])
+
+    async def test_container_exec_records_bounded_wait_and_output_limit(self):
+        terminal_response = ({"status": "running", "output": [], "truncated": True}, {"content-type": "application/json"})
+
+        async def run_command(**kwargs):
+            return terminal_response
+
+        tool = native_container_tools({"run_command": {"callable": run_command}})["container.exec"]
+        with patch("open_webui.integrations.gpt_oss_harmony.terminal.emit_native_tool_event") as emit:
+            self.assertIs(await tool["callable"](command=["sleep", "60"]), terminal_response)
+
+        event = emit.call_args.args[0]
+        self.assertFalse(event["success"])
+        self.assertTrue(event["wait_expired"])
+        self.assertTrue(event["output_truncated"])
 
     async def test_browser_results_emit_source_cards(self):
         browser = HarmonyBrowser(Backend())
