@@ -17,7 +17,8 @@ The Python service is reachable only as `http://harmony-jupyter:8888` from the i
 
 ## Model settings
 
-For the isolated Harmony model, retain:
+For the isolated Harmony model, retain this `meta` fragment (the field is
+camelCase in OpenWebUI):
 
 ```json
 {
@@ -25,7 +26,7 @@ For the isolated Harmony model, retain:
     "gpt_oss_harmony_native_tools": true,
     "code_interpreter": true
   },
-  "builtin_tools": {
+  "builtinTools": {
     "code_interpreter": true
   }
 }
