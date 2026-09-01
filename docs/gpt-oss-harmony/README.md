@@ -8,6 +8,7 @@ This Draft-PR support area documents the full P0/P1 isolated Harmony implementat
 - W2: native browser dispatch, citation handling, limits, tests, and the vendored GPT-OSS browser reference are included for fork review.
 - W3: `terminal.py`, related dispatch/middleware logic, and terminal-workspace tests implement native `container.exec` through an authorized Open Terminal connection.
 - P1: `repo_browser.py`, its tests, and the optional isolated runtime helper under `tools/gpt-oss-harmony/` implement bounded repository inspection and patching.
+- P1 Python: `python.py` maps the trained bare `python` recipient to OpenWebUI's authenticated Jupyter Code Interpreter; top-level `apply_patch` remains an alias of the existing root-confined patch helper.
 
 The runtime support files are intentionally separate from the OpenWebUI application source. They expose only a loopback isolated profile and never modify the installed OpenWebUI or the Guardian `GPTOSS20B` service.
 
@@ -21,4 +22,5 @@ The runtime support files are intentionally separate from the OpenWebUI applicat
 
 - [Enable isolated `container.exec`](container-exec.md)
 - [Enable the optional isolated P1 `repo_browser.*` profile](repo-browser.md)
+- [Enable the optional isolated native `python` profile](python.md)
 - [Runtime support bundle](../../tools/gpt-oss-harmony/README.md)
