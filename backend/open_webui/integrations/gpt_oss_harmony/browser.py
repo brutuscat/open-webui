@@ -60,6 +60,7 @@ class HarmonyBrowser:
         backend_metrics.clear()
         result = ""
         success = False
+        cursor = -1
         # The reference surface accepts ``source`` but this deployment deliberately
         # exposes exactly one backend: OpenWebUI's configured web provider.  Normalise
         # model-supplied source labels rather than reject them and trigger retry loops.
@@ -81,10 +82,11 @@ class HarmonyBrowser:
                     result = "Error: browser response state exceeded its 20 MiB limit."
                 else:
                     result = self._message_text(messages[-1]) if messages else "Error: browser returned no result."
-        result = self._with_citation_reminder(tool_name, result)
-        success = not result.startswith("Error:")
-        if success and result:
-            self._capture_citation_snapshot(tool_name, result)
+            result = self._with_citation_reminder(tool_name, result)
+            success = not result.startswith("Error:")
+            if success and result:
+                self._capture_citation_snapshot(tool_name, result)
+            cursor = self.tool.tool_state.current_cursor
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
         backend_ms = backend_metrics.get("backend_ms", 0.0)
         emit_native_tool_event({
@@ -96,7 +98,7 @@ class HarmonyBrowser:
             "backend_ms": backend_ms,
             "input_bytes": len(str(kwargs).encode("utf-8")),
             "output_bytes": len(result.encode("utf-8")),
-            "cursor": self.tool.tool_state.current_cursor,
+            "cursor": cursor,
             "cache_hit": False,
         })
         return result
