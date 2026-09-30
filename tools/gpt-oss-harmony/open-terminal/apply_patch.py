@@ -188,10 +188,10 @@ def apply(operations: list[Operation], root: Path) -> None:
         _inside(target.parent.resolve(), root)
         descriptor, temporary = tempfile.mkstemp(prefix=".apply_patch-", dir=target.parent, text=True)
         try:
-            if target in preserve_modes:
-                os.fchmod(descriptor, preserve_modes[target])
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
                 handle.write(content)
+            if target in preserve_modes:
+                os.chmod(temporary, preserve_modes[target])
             os.replace(temporary, target)
         except Exception:
             try:
