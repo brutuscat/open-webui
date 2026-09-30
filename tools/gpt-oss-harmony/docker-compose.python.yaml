@@ -1,0 +1,101 @@
+# Optional P1 overlay: hardened, server-side Python for the isolated Harmony profile.
+# Combine only with docker-compose.harmony.yaml and docker-compose.repo-browser.yaml.
+services:
+  open-webui-harmony:
+    environment:
+      ENABLE_CODE_EXECUTION: "true"
+      CODE_EXECUTION_ENGINE: "jupyter"
+      CODE_EXECUTION_JUPYTER_URL: "http://harmony-jupyter:8888"
+      CODE_EXECUTION_JUPYTER_AUTH: "token"
+      CODE_EXECUTION_JUPYTER_AUTH_TOKEN: "${HARMONY_JUPYTER_TOKEN:?set a local isolated Jupyter token}"
+      CODE_EXECUTION_JUPYTER_TIMEOUT: "${HARMONY_PYTHON_TIMEOUT_SECONDS:-60}"
+      ENABLE_CODE_INTERPRETER: "true"
+      CODE_INTERPRETER_ENGINE: "jupyter"
+      CODE_INTERPRETER_JUPYTER_URL: "http://harmony-jupyter:8888"
+      CODE_INTERPRETER_JUPYTER_AUTH: "token"
+      CODE_INTERPRETER_JUPYTER_AUTH_TOKEN: "${HARMONY_JUPYTER_TOKEN:?set a local isolated Jupyter token}"
+      CODE_INTERPRETER_JUPYTER_TIMEOUT: "${HARMONY_PYTHON_TIMEOUT_SECONDS:-60}"
+      HARMONY_PYTHON_MAX_OUTPUT_BYTES: "${HARMONY_PYTHON_MAX_OUTPUT_BYTES:-1048576}"
+    depends_on:
+      harmony-jupyter:
+        condition: service_healthy
+    networks:
+      - default
+      - harmony-terminal
+      - harmony-python
+
+  harmony-jupyter-init:
+    image: quay.io/jupyter/minimal-notebook@sha256:644c2e9e91839be7633e1b78d1ffe15e7543cc3355baa48a58b35d36638d73f6
+    container_name: harmony-jupyter-permissions-init
+    user: "0:0"
+    entrypoint: ["/bin/chown"]
+    command: ["-R", "1000:100", "/home/user"]
+    volumes:
+      - open-terminal-harmony-home:/home/user
+    networks:
+      - harmony-python
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+    restart: "no"
+
+  harmony-jupyter:
+    build:
+      context: ./jupyter
+      dockerfile: Dockerfile
+    image: local/harmony-jupyter-minimal:dev
+    container_name: harmony-jupyter-gpt-oss
+    depends_on:
+      harmony-jupyter-init:
+        condition: service_completed_successfully
+    environment:
+      HOME: "/tmp/jupyter-home"
+      IPYTHONDIR: "/tmp/ipython"
+      JUPYTER_RUNTIME_DIR: "/tmp/jupyter-runtime"
+      JUPYTER_TOKEN: "${HARMONY_JUPYTER_TOKEN:?set a local isolated Jupyter token}"
+    command:
+      - start-notebook.py
+      - --ServerApp.ip=0.0.0.0
+      - --ServerApp.port=8888
+      - --ServerApp.open_browser=False
+      - --ServerApp.root_dir=/home/user
+    user: "1000:100"
+    working_dir: /home/user
+    volumes:
+      - open-terminal-harmony-home:/home/user
+    networks:
+      - harmony-python
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    cpus: 1
+    pids_limit: 128
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/api?token=' + os.environ['JUPYTER_TOKEN'], timeout=3).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: "no"
+
+networks:
+  harmony-python:
+    internal: true

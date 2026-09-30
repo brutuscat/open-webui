@@ -96,7 +96,10 @@ class JupyterCodeExecuter:
 
         # token authentication
         if self.token:
-            self.params.update({'token': self.token})
+            # Keep the secret out of URLs, exception text, proxies, and logs.
+            # Jupyter Server accepts its documented ``Authorization: token`` form
+            # for both HTTP and WebSocket requests.
+            self.session.headers.update({'Authorization': f'token {self.token}'})
 
     async def init_kernel(self) -> None:
         async with self.session.post(url='api/kernels', params=self.params) as response:
@@ -108,7 +111,7 @@ class JupyterCodeExecuter:
         ws_base = self.base_url.replace('http', 'ws', 1)
         ws_params = '?' + '&'.join([f'{key}={val}' for key, val in self.params.items()])
         websocket_url = f'{ws_base}api/kernels/{self.kernel_id}/channels{ws_params if len(ws_params) > 1 else ""}'
-        ws_headers = {}
+        ws_headers = dict(self.session.headers)
         if self.password and not self.token:
             ws_headers = {
                 'Cookie': '; '.join([f'{cookie.key}={cookie.value}' for cookie in self.session.cookie_jar]),
@@ -120,7 +123,10 @@ class JupyterCodeExecuter:
         # initialize ws
         websocket_url, ws_headers = self.init_ws()
         # execute
-        async with websockets.connect(websocket_url, additional_headers=ws_headers) as ws:
+        # The native adapter enforces the 1 MiB returned-result limit after
+        # structured parsing. Permit a modest protocol envelope above that
+        # threshold so a valid near-limit stream can be received and bounded.
+        async with websockets.connect(websocket_url, additional_headers=ws_headers, max_size=2 * 1024 * 1024) as ws:
             await self.execute_in_jupyter(ws)
 
     async def execute_in_jupyter(self, ws) -> None:
@@ -162,7 +168,9 @@ class JupyterCodeExecuter:
                 if message_data.get('parent_header', {}).get('msg_id') != msg_id:
                     continue
                 # check message type
-                msg_type = message_data.get('msg_type')
+                # Current Jupyter servers carry the message type in the protocol
+                # header.  Retain the legacy top-level form for older endpoints.
+                msg_type = message_data.get('msg_type') or message_data.get('header', {}).get('msg_type')
                 match msg_type:
                     case 'stream':
                         if message_data['content']['name'] == 'stdout':

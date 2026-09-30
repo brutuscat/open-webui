@@ -118,10 +118,21 @@ from open_webui.utils.terminals import (
     terminal_context_config,
     terminal_context_id,
 )
+from open_webui.integrations.gpt_oss_harmony.detection import is_native_harmony_model
+from open_webui.integrations.gpt_oss_harmony.python import jupyter_python_enabled, native_python_tools
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
 log = logging.getLogger(__name__)
+
+
+def native_browser_tools(request: Request, user: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Load the optional Harmony browser implementation only when it is used."""
+    from open_webui.integrations.gpt_oss_harmony.dispatch import (
+        native_browser_tools as _native_browser_tools,
+    )
+
+    return _native_browser_tools(request, user)
 
 
 async def build_tool_server_headers(
@@ -548,6 +559,10 @@ async def get_builtin_tools(
         'image_generation.enable',
         'images.edit.enable',
         'code_interpreter.enable',
+        'code_interpreter.engine',
+        'code_interpreter.jupyter.url',
+        'code_interpreter.jupyter.auth',
+        'code_interpreter.jupyter.auth_token',
         'notes.enable',
         'channels.enable',
         'automations.enable',
@@ -674,7 +689,8 @@ async def get_builtin_tools(
             ]
         )
 
-    # Add web search tools if builtin category enabled AND enabled globally AND model has web_search capability
+    # GPT-OSS native mode replaces ordinary web tools with the Harmony browser
+    # namespace. The same availability and permission checks remain in force.
     if (
         is_builtin_tool_enabled('web_search')
         and config.get('web.search.enable')
@@ -682,7 +698,10 @@ async def get_builtin_tools(
         and features.get('web_search')
         and await has_user_permission('web_search')
     ):
-        builtin_functions.extend([search_web, fetch_url])
+        if is_native_harmony_model(model):
+            tools_dict.update(native_browser_tools(request, user))
+        else:
+            builtin_functions.extend([search_web, fetch_url])
 
     # Add image generation/edit tools if builtin category enabled,
     # globally enabled, and allowed by model capability.
@@ -712,7 +731,8 @@ async def get_builtin_tools(
         and features.get('code_interpreter')
         and await has_user_permission('code_interpreter')
     ):
-        builtin_functions.append(execute_code)
+        if not is_native_harmony_model(model) or jupyter_python_enabled(config):
+            builtin_functions.append(execute_code)
 
     # Notes tools - search, view, create, and update user's notes
     if is_note_chat or (
@@ -792,12 +812,16 @@ async def get_builtin_tools(
             if isinstance(parameters.get('required'), list):
                 parameters['required'] = [name for name in parameters['required'] if name != 'background']
 
-        tools_dict[func.__name__] = {
+        tool_entry = {
             'tool_id': f'builtin:{func.__name__}',
             'callable': callable,
             'spec': spec,
             'type': 'builtin',
         }
+        if func.__name__ == 'execute_code' and is_native_harmony_model(model):
+            tools_dict.update(native_python_tools(tool_entry))
+        else:
+            tools_dict[func.__name__] = tool_entry
 
     return tools_dict
 
@@ -1458,6 +1482,10 @@ async def get_terminal_tools(
             'callable': callable,
             'spec': tool_spec,
             'type': 'terminal',
+            # Kept out of the exposed tool schema. Native repo_browser uses this
+            # value only to require an exact match with its explicit repository
+            # allow-list; it never reads the host filesystem itself.
+            'terminal_cwd': terminal_cwd,
         }
 
     return tools_dict, system_prompt

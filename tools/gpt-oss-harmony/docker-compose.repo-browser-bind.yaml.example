@@ -1,0 +1,19 @@
+# Optional P1 overlay: an explicitly selected host repository bind mount.
+# Copy this file outside version control, set the two values, and combine it
+# with docker-compose.harmony.yaml only after approving that host path.
+services:
+  open-webui-harmony:
+    environment:
+      HARMONY_REPO_BROWSER_ROOT: "/workspace/repo"
+      HARMONY_REPO_BROWSER_APPLY_PATCH: "true"
+
+  open-terminal-harmony:
+    build:
+      context: ./open-terminal
+      dockerfile: Dockerfile
+    image: local/open-terminal-gpt-oss-harmony-repo-browser:dev
+    environment:
+      OPEN_TERMINAL_FILE_BROWSER_ROOT: "/workspace/repo"
+    working_dir: "/workspace/repo"
+    volumes:
+      - "${HARMONY_REPO_BROWSER_HOST_PATH:?set one explicit host repository path}:/workspace/repo"

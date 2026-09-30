@@ -1,0 +1,7 @@
+# Minimal dependencies for the vendored OpenAI GPT-OSS simple browser.
+# Keep this separate from OpenWebUI's base requirements and install only in the
+# isolated Harmony profile after review.
+openai-harmony
+chz>=0.3.0
+html2text>=2025.4.15
+structlog>=25.4.0
