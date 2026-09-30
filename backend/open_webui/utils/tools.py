@@ -119,12 +119,20 @@ from open_webui.utils.terminals import (
     terminal_context_id,
 )
 from open_webui.integrations.gpt_oss_harmony.detection import is_native_harmony_model
-from open_webui.integrations.gpt_oss_harmony.dispatch import native_browser_tools
 from open_webui.integrations.gpt_oss_harmony.python import jupyter_python_enabled, native_python_tools
 from pydantic import BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 
 log = logging.getLogger(__name__)
+
+
+def native_browser_tools(request: Request, user: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Load the optional Harmony browser implementation only when it is used."""
+    from open_webui.integrations.gpt_oss_harmony.dispatch import (
+        native_browser_tools as _native_browser_tools,
+    )
+
+    return _native_browser_tools(request, user)
 
 
 async def build_tool_server_headers(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import defaultdict, deque
 from typing import Any, AsyncIterator, Callable
 
 from open_webui.vendor.openai_gpt_oss_browser.simple_browser.simple_browser_tool import (
@@ -25,6 +26,7 @@ class HarmonyBrowser:
         self.tool = SimpleBrowserTool(backend=backend)
         self.lock = asyncio.Lock()
         self.call_count = 0
+        self.citation_snapshots: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
 
     async def search(self, query: str, topn: int = 10, source: str | None = None) -> str:
         return await self._call(self.tool.search, source=source, query=query, topn=topn)
@@ -81,6 +83,8 @@ class HarmonyBrowser:
                     result = self._message_text(messages[-1]) if messages else "Error: browser returned no result."
         result = self._with_citation_reminder(tool_name, result)
         success = not result.startswith("Error:")
+        if success and result:
+            self._capture_citation_snapshot(tool_name, result)
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
         backend_ms = backend_metrics.get("backend_ms", 0.0)
         emit_native_tool_event({
@@ -109,6 +113,32 @@ class HarmonyBrowser:
             f"{result}\n\nCitation reminder: cite inspected lines in the final answer as "
             f"【{cursor}†Lstart-Lend】."
         )
+
+    def _capture_citation_snapshot(self, tool_name: str, result: str) -> None:
+        if tool_name not in {"search", "open"} or not self.tool.tool_state.page_stack:
+            return
+
+        page = self.tool.tool_state.get_page()
+        if tool_name == "search":
+            snapshot = {
+                "document": result[:500],
+                "urls": [str(url) for url in page.urls.values()],
+            }
+        else:
+            if not page.url:
+                return
+            snapshot = {
+                "document": str(page.text)[:500],
+                "url": str(page.url),
+                "title": str(page.title or page.url),
+            }
+        self.citation_snapshots[tool_name].append(snapshot)
+
+    def pop_citation_snapshot(self, tool_name: str) -> dict[str, Any] | None:
+        queue = self.citation_snapshots.get(tool_name.removeprefix("browser."))
+        if not queue:
+            return None
+        return queue.popleft()
 
     def _state_bytes(self) -> int:
         return sum(len(page.text.encode("utf-8")) for page in self.tool.tool_state.pages.values())
