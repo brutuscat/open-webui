@@ -35,6 +35,34 @@
 		<meta name="theme-color" content="#171717" />
 		<meta name="robots" content="noindex,nofollow" />
 
+		<meta
+			name="better-stack-rum-token"
+			content="%sveltekit.env.PUBLIC_BETTER_STACK_RUM_TOKEN%"
+		/>
+		<script>
+			!(function (b, e, t, r) {
+				if (!r) return;
+
+				b[t] =
+					b[t] ||
+					function (...args) {
+						(b[t].q = b[t].q || []).push(args);
+					};
+				b[t].l = +new Date();
+				var s = e.createElement('script');
+				s.async = 1;
+				s.crossOrigin = 'anonymous';
+				s.src = 'https://betterstack.net/b.js?t=' + r;
+				(e.head || e.getElementsByTagName('head')[0]).appendChild(s);
+				b[t]('init', { environment: 'production' });
+			})(
+				window,
+				document,
+				'betterstack',
+				document.querySelector('meta[name="better-stack-rum-token"]').content
+			);
+		</script>
+
 		<script src="/static/loader.js" defer crossorigin="use-credentials"></script>
 		<link rel="stylesheet" href="/static/custom.css" crossorigin="use-credentials" />
 
