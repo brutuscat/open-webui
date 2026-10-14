@@ -1,5 +1,8 @@
 # Isolated Harmony runtime support
 
+To prepare an upstream update without losing the fork or local edits, see
+[Updating OWU while preserving Harmony](../../docs/gpt-oss-harmony/upgrading.md).
+
 These files make the exact, non-production Docker/Open Terminal setup visible in the OpenWebUI fork-review PR.
 
 ## Files

@@ -4,7 +4,7 @@
 
 	import { getAdminDetails, userSignOut } from '$lib/apis/auths';
 	import { onMount, tick, getContext } from 'svelte';
-	import { config } from '$lib/stores';
+	import { config, user } from '$lib/stores';
 
 	const i18n = getContext('i18n');
 
@@ -74,6 +74,7 @@
 								console.error(err);
 								return null;
 							});
+							user.set(null);
 							localStorage.removeItem('token');
 							location.href = res?.redirect_url ?? '/auth';
 						}}>{$i18n.t('Sign Out')}</button

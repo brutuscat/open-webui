@@ -1363,6 +1363,25 @@
 		);
 	}
 
+	let betterStackUserSignature = undefined;
+
+	$: if (typeof window !== 'undefined' && loaded && $user !== undefined) {
+		const sessionUser = $user;
+		const betterStackUser =
+			sessionUser?.id && sessionUser.email
+				? { id: sessionUser.id, email: sessionUser.email, username: sessionUser.name }
+				: null;
+		const signature = betterStackUser ? JSON.stringify(betterStackUser) : null;
+
+		if (signature !== betterStackUserSignature) {
+			const betterstack = Reflect.get(window, 'betterstack');
+			if (typeof betterstack === 'function') {
+				betterstack('user', betterStackUser);
+				betterStackUserSignature = signature;
+			}
+		}
+	}
+
 	onDestroy(() => {
 		bc.close();
 	});
