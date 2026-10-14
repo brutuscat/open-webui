@@ -21,6 +21,15 @@ def run(*args: str, cwd: Path, capture: bool = False) -> bytes:
     return result.stdout if capture else b""
 
 
+def clone_source(source: Path, candidate: Path) -> None:
+    shallow = run("git", "rev-parse", "--is-shallow-repository", cwd=source, capture=True).strip() == b"true"
+    # Local object copies omit the shallow boundary of linked worktrees.
+    mode = "--no-local" if shallow else "--no-hardlinks"
+    run("git", "clone", mode, "--no-checkout", str(source), str(candidate), cwd=source)
+    if shallow and run("git", "rev-parse", "--is-shallow-repository", cwd=candidate, capture=True).strip() != b"true":
+        raise RuntimeError("Candidate clone lost the source's shallow history boundary.")
+
+
 def resolve_conflicts(path: str, text: str) -> str:
     """Combine only the conflicts reviewed against the pinned release."""
     def resolve(match: re.Match[str]) -> str:
@@ -126,7 +135,7 @@ def main() -> None:
     unexpected = [name for name in untracked if name and name not in allowed]
     if unexpected:
         raise RuntimeError(f"Untracked files need an explicit preservation decision: {unexpected}")
-    run("git", "clone", "--no-hardlinks", "--no-checkout", str(source), str(candidate), cwd=source)
+    clone_source(source, candidate)
     run("git", "switch", "-c", "upgrade/owu-v0.12.0-harmony", head, cwd=candidate)
     if patch:
         subprocess.run(["git", "apply", "--binary", "-"], input=patch, cwd=candidate, check=True)

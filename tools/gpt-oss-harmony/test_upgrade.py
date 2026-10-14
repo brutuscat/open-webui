@@ -3,10 +3,12 @@
 import ast
 import fnmatch
 import json
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
-from upgrade import guard_native_tool_deferral, resolve_conflicts
+from upgrade import clone_source, guard_native_tool_deferral, resolve_conflicts
 
 
 def conflict(ours, theirs):
@@ -14,6 +16,26 @@ def conflict(ours, theirs):
 
 
 class UpgradeTests(unittest.TestCase):
+    def test_clone_preserves_shallow_linked_worktree_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args, cwd=root):
+                return subprocess.check_output(["git", *args], cwd=cwd, stderr=subprocess.STDOUT).strip()
+            original, shallow, linked, candidate = [root / name for name in ("original", "shallow", "linked", "candidate")]
+            git("init", str(original))
+            git("config", "user.name", "Test", cwd=original)
+            git("config", "user.email", "test@localhost", cwd=original)
+            for value in ("before", "boundary"):
+                (original / "file").write_text(value)
+                git("add", "file", cwd=original)
+                git("commit", "-m", value, cwd=original)
+            git("clone", "--depth", "1", original.as_uri(), str(shallow))
+            git("worktree", "add", "--detach", str(linked), cwd=shallow)
+            clone_source(linked, candidate)
+            self.assertEqual(git("rev-parse", "--is-shallow-repository", cwd=candidate), b"true")
+            self.assertEqual(git("rev-parse", "HEAD", cwd=candidate), git("rev-parse", "HEAD", cwd=linked))
+            git("fsck", "--connectivity-only", cwd=candidate)
+
     def test_terminal_keeps_workspace_and_upstream_shell_policy(self):
         merged = resolve_conflicts("backend/open_webui/utils/tools.py", conflict("            'terminal_cwd': terminal_cwd,", "            'user_shell_tools': connection_config.get('user_shell_tools', 'auto'),"))
         self.assertIn("'terminal_cwd': terminal_cwd,", merged)
