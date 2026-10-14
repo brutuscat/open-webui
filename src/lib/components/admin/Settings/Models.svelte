@@ -5,7 +5,7 @@
 	const { saveAs } = fileSaver;
 
 	import { onMount, onDestroy, getContext, tick } from 'svelte';
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	import {
 		config,
@@ -18,9 +18,10 @@
 	import {
 		createNewModel,
 		deleteAllModels,
-		getBaseModelTags,
-		getBaseModels,
+		deleteModelById,
+		getAllModels,
 		getModelById,
+		exportModels,
 		toggleModelById,
 		updateModelById,
 		updateModelAccessGrants,
@@ -88,21 +89,24 @@
 	let defaultModelIdSet = new Set<string>();
 	let defaultPinnedModelIdSet = new Set<string>();
 
-	let baseModels: ModelListItem[] = [];
+	let savedModels: ModelListItem[] = [];
 	let allModels: ModelListItem[] = [];
+	let availableModelIds = new Set<string>();
 
 	let filteredModels = [];
 	let selectedModelId = null;
 
 	let showManageModal = false;
 	let showResetModal = false;
+	let showDeleteModal = false;
+	let modelToDelete: ModelListItem | null = null;
 	let savingModelOrder = false;
 	let savingModelsSettings = false;
 	let modelOrderDirty = false;
 	let modelDefaultsPanel = null;
 	let modelDefaultsDirty = false;
 
-	let viewOption = ''; // '' = All, 'enabled', 'disabled', 'visible', 'hidden'
+	let viewOption = 'available';
 	let tags: string[] = [];
 	let selectedTag = '';
 
@@ -121,6 +125,12 @@
 
 	const isPresetModel = (model: any) =>
 		!!(model?.preset || model?.base_model_id || model?.info?.base_model_id);
+	const canResetModel = (model: ModelListItem | null) =>
+		!!model && !isPresetModel(model) && availableModelIds.has(model.id);
+	const modelTags = (model: any): string[] =>
+		(model?.meta?.tags ?? [])
+			.map((tag) => (typeof tag === 'string' ? tag : tag?.name))
+			.filter(Boolean);
 
 	const modelAccessLabel = (model) => {
 		if (isPublicModel(model)) {
@@ -149,8 +159,13 @@
 		const modelOrder = new Map(modelOrderList.map((id, idx) => [id, idx]));
 
 		filteredModels = models
+			.filter((m) => !selectedTag || modelTags(m).includes(selectedTag))
 			.filter((m) => searchValue === '' || m.name.toLowerCase().includes(searchValue.toLowerCase()))
 			.filter((m) => {
+				if (viewOption === 'available') return availableModelIds.has(m.id) || isPresetModel(m);
+				if (viewOption === 'unavailable') return !availableModelIds.has(m.id) && !isPresetModel(m);
+				if (viewOption === 'base') return !isPresetModel(m);
+				if (viewOption === 'workspace') return isPresetModel(m);
 				if (viewOption === 'enabled') return m?.is_active ?? true;
 				if (viewOption === 'disabled') return !(m?.is_active ?? true);
 				if (viewOption === 'visible') return !(m?.meta?.hidden ?? false);
@@ -174,9 +189,6 @@
 	}
 
 	let searchValue = '';
-	let canReorderModels = false;
-
-	$: canReorderModels = searchValue === '' && viewOption === '' && selectedTag === '';
 
 	const enableAllHandler = async () => {
 		const modelsToEnable = filteredModels.filter((m) => !(m.is_active ?? true));
@@ -245,7 +257,14 @@
 	};
 
 	const downloadModels = async (models) => {
-		models = await Promise.all(models.map(getFullModel));
+		try {
+			const exported = [];
+			for (const model of models) exported.push(await getPortableModel(model));
+			models = exported;
+		} catch (error: any) {
+			toast.error(`${error?.detail ?? error}`);
+			return;
+		}
 		let blob = new Blob([JSON.stringify(models)], {
 			type: 'application/json'
 		});
@@ -262,35 +281,41 @@
 			.split(',')
 			.filter((id) => id);
 
-		tags = await getBaseModelTags(localStorage.token);
+		savedModels = await getAllModels(localStorage.token);
+		tags = [...new Set(savedModels.flatMap(modelTags))].sort();
 		if (selectedTag && !tags.includes(selectedTag)) {
 			selectedTag = '';
 		}
 
-		baseModels = await getBaseModels(localStorage.token, selectedTag);
 		allModels = await getModels(localStorage.token);
-		const baseModelIds = new Set<string>(baseModels.map((model: ModelListItem) => model.id));
 
-		models = allModels
-			.filter((m: ModelListItem) => !selectedTag || baseModelIds.has(m.id))
-			.map((m: ModelListItem) => {
-				const baseModel = baseModels.find((model: ModelListItem) => model.id === m.id);
+		const providerModels = await getModels(localStorage.token, null, true);
+		const allModelIds = new Set<string>(allModels.map((model: ModelListItem) => model.id));
+		allModels = [
+			...allModels,
+			...providerModels.filter((model: ModelListItem) => !allModelIds.has(model.id))
+		];
+		availableModelIds = new Set(allModels.map((model) => model.id));
+		allModels.push(...savedModels.filter((model) => !availableModelIds.has(model.id)));
 
-				if (baseModel) {
-					return {
-						...m,
-						...baseModel
-					};
-				} else {
-					return {
-						...m,
-						id: m.id,
-						name: m.name,
+		models = allModels.map((m: ModelListItem) => {
+			const savedModel = savedModels.find((model: ModelListItem) => model.id === m.id);
 
-						is_active: true
-					};
-				}
-			});
+			if (savedModel) {
+				return {
+					...m,
+					...savedModel
+				};
+			} else {
+				return {
+					...m,
+					id: m.id,
+					name: m.name,
+
+					is_active: true
+				};
+			}
+		});
 
 		modelOrderList = [
 			...modelOrderList.filter((id) => models.some((model) => model.id === id)),
@@ -424,15 +449,14 @@
 		const target = parent.children[oldIndex < newIndex ? oldIndex : oldIndex + 1];
 		parent.insertBefore(item, target);
 
-		const updatedModels = [...filteredModels];
-		const [movedModel] = updatedModels.splice(oldIndex, 1);
-		updatedModels.splice(newIndex, 0, movedModel);
+		// Anchor on the visible neighbor so filtered-out models keep their place
+		const movedModelId = filteredModels[oldIndex].id;
+		const anchorModelId = filteredModels[newIndex].id;
+		const reorderedIds = modelOrderList.filter((id) => id !== movedModelId);
+		const anchorIndex = reorderedIds.indexOf(anchorModelId);
+		reorderedIds.splice(oldIndex < newIndex ? anchorIndex + 1 : anchorIndex, 0, movedModelId);
 
-		const orderedIds = updatedModels.map((model) => model.id);
-		const orderedSet = new Set(orderedIds);
-
-		models = [...updatedModels, ...models.filter((model) => !orderedSet.has(model.id))];
-		modelOrderList = models.map((model) => model.id);
+		modelOrderList = reorderedIds;
 		modelOrderDirty = true;
 	};
 
@@ -442,7 +466,7 @@
 			sortable = null;
 		}
 
-		if (modelListElement && filteredModels.length > 0 && canReorderModels) {
+		if (modelListElement && filteredModels.length > 0) {
 			sortable = new Sortable(modelListElement, {
 				animation: 150,
 				handle: '.model-item-handle',
@@ -460,7 +484,7 @@
 	const upsertModelHandler = async (model, overrides = {}, showToast = true) => {
 		model = { ...model, ...(isPresetModel(model) ? {} : { base_model_id: null }), ...overrides };
 
-		if (baseModels.find((m: ModelListItem) => m.id === model.id) || isPresetModel(model)) {
+		if (savedModels.find((m: ModelListItem) => m.id === model.id) || isPresetModel(model)) {
 			const res = await updateModelById(localStorage.token, model.id, model).catch((error) => {
 				return null;
 			});
@@ -468,6 +492,7 @@
 			if (res && showToast) {
 				toast.success($i18n.t('Model updated successfully'));
 			}
+			return !!res;
 		} else {
 			const res = await createNewModel(localStorage.token, {
 				meta: {},
@@ -483,8 +508,9 @@
 
 			if (res && showToast) {
 				toast.success($i18n.t('Model updated successfully'));
-				await init();
+				await init().catch((error) => toast.error(`${error}`));
 			}
+			return !!res;
 		}
 	};
 
@@ -512,6 +538,29 @@
 				$config?.features?.enable_direct_connections && ($settings?.directConnections ?? null)
 			)
 		);
+	};
+
+	const deleteModelHandler = async (model: ModelListItem) => {
+		try {
+			// Read fresh records: visibility and access changes can create saved settings.
+			const savedModels = await getAllModels(localStorage.token);
+			if (savedModels.some((savedModel: ModelListItem) => savedModel.id === model.id)) {
+				const res = await deleteModelById(localStorage.token, model.id);
+				if (!res) {
+					toast.error($i18n.t('Failed to delete model'));
+					return;
+				}
+			}
+
+			toast.success(
+				canResetModel(model)
+					? $i18n.t('Model reset successfully')
+					: $i18n.t('Deleted {{name}}', { name: model.name })
+			);
+			await init();
+		} catch (error: any) {
+			toast.error(`${error?.detail ?? error}`);
+		}
 	};
 
 	const hideModelHandler = async (model) => {
@@ -592,9 +641,14 @@
 	};
 
 	const getFullModel = async (model: any) =>
-		baseModels.some((baseModel) => baseModel.id === model.id) || isPresetModel(model)
+		savedModels.some((savedModel) => savedModel.id === model.id) || isPresetModel(model)
 			? ((await getModelById(localStorage.token, model.id).catch(() => null)) ?? model)
 			: model;
+
+	const getPortableModel = async (model: any) =>
+		isPresetModel(model)
+			? (await exportModels(localStorage.token, [model.id]))[0]
+			: getFullModel(model);
 
 	const openModelHandler = async (model: any) => {
 		if (isPresetModel(model)) {
@@ -610,7 +664,7 @@
 		model = await getFullModel(model);
 		sessionStorage.model = JSON.stringify({
 			...model,
-			base_model_id: model.id,
+			...(isPresetModel(model) ? {} : { base_model_id: model.id }),
 			id: `${model.id}-clone`,
 			name: `${model.name} (Clone)`
 		});
@@ -619,7 +673,12 @@
 	};
 
 	const exportModelHandler = async (model) => {
-		model = await getFullModel(model);
+		try {
+			model = await getPortableModel(model);
+		} catch (error: any) {
+			toast.error(`${error?.detail ?? error}`);
+			return;
+		}
 		let blob = new Blob([JSON.stringify([model])], {
 			type: 'application/json'
 		});
@@ -633,7 +692,7 @@
 				? $pinnedModels.filter((id) => id !== modelId)
 				: [...$pinnedModels, modelId]
 		});
-		await updateUserSettings(localStorage.token, { ui: $settings });
+		await updateUserSettings(localStorage.token, { ui: { pinnedModels: $settings.pinnedModels } });
 	};
 
 	onMount(async () => {
@@ -674,6 +733,22 @@
 </script>
 
 <ConfirmDialog
+	title={canResetModel(modelToDelete) ? $i18n.t('Reset') : $i18n.t('Delete')}
+	message={canResetModel(modelToDelete)
+		? $i18n.t(
+				'This will reset the saved settings for this base model to their defaults. The model will remain available.'
+			)
+		: $i18n.t('Are you sure you want to delete **{{modelName}}**?', {
+				modelName: modelToDelete?.name
+			})}
+	confirmLabel={canResetModel(modelToDelete) ? $i18n.t('Reset') : $i18n.t('Delete')}
+	bind:show={showDeleteModal}
+	onConfirm={async () => {
+		if (modelToDelete) await deleteModelHandler(modelToDelete);
+	}}
+/>
+
+<ConfirmDialog
 	title={$i18n.t('Reset All Models')}
 	message={$i18n.t('This will delete all models including custom models and cannot be undone.')}
 	bind:show={showResetModal}
@@ -693,7 +768,7 @@
 		<div class="flex h-full min-h-0 flex-col text-sm">
 			<div class="mb-2 flex items-center justify-between">
 				<h2 class="text-sm font-medium text-gray-900 dark:text-white">
-					{$i18n.t('Models')}
+					{$i18n.t('settings.admin.models.title')}
 					<span class="ml-2 font-normal text-gray-500 dark:text-gray-500">
 						{filteredModels.length}
 					</span>
@@ -792,14 +867,11 @@
 									items={tags.map((tag) => {
 										return { value: tag, label: tag };
 									})}
-									onChange={async () => {
-										await init();
-									}}
 								/>
 							{/if}
 						</div>
 
-						<Dropdown align="end">
+						<Dropdown closeOnSelect align="end">
 							<Tooltip content={$i18n.t('Actions')}>
 								<button
 									class="flex h-8 items-center gap-1.5 rounded-xl bg-transparent px-1.5 text-[0.8125rem] font-normal text-gray-700 transition hover:text-gray-900 dark:text-gray-200 dark:hover:text-gray-100"
@@ -811,7 +883,7 @@
 							</Tooltip>
 
 							<div slot="content">
-								<DropdownMenu className="w-[10.625rem] shadow-sm">
+								<DropdownMenu className="min-w-[10.625rem] shadow-sm">
 									{#if $user?.role === 'admin'}
 										<button
 											class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-xl bg-transparent px-2 text-[0.8125rem] disabled:pointer-events-none disabled:opacity-40 hover:text-gray-900 dark:hover:text-gray-100"
@@ -822,18 +894,26 @@
 											}}
 										>
 											<DocumentArrowUp className="size-3.5" />
-											<div class="flex items-center">{$i18n.t('Import')}</div>
+											<div class="flex items-center">
+												{$i18n.t('settings.admin.models.importModels.label')}
+											</div>
 										</button>
 
 										<button
 											class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-xl bg-transparent px-2 text-[0.8125rem] hover:text-gray-900 dark:hover:text-gray-100"
 											type="button"
 											on:click={() => {
-												downloadModels(models ?? []);
+												downloadModels(
+													(models ?? []).filter(
+														(model) => !selectedTag || modelTags(model).includes(selectedTag)
+													)
+												);
 											}}
 										>
 											<Download className="size-3.5" />
-											<div class="flex items-center">{$i18n.t('Export')}</div>
+											<div class="flex items-center">
+												{$i18n.t('settings.admin.models.exportModels.label')}
+											</div>
 										</button>
 									{/if}
 
@@ -845,7 +925,9 @@
 										}}
 									>
 										<Wrench className="size-3.5" />
-										<div class="flex items-center">{$i18n.t('Manage')}</div>
+										<div class="flex items-center">
+											{$i18n.t('settings.admin.models.manageModels.label')}
+										</div>
 									</button>
 
 									<button
@@ -856,7 +938,9 @@
 										}}
 									>
 										<GarbageBin className="size-3.5" />
-										<div class="flex items-center">{$i18n.t('Reset')}</div>
+										<div class="flex items-center">
+											{$i18n.t('settings.admin.models.resetModels.label')}
+										</div>
 									</button>
 
 									<hr class="mx-1 my-0.5 border-gray-100 dark:border-gray-800" />
@@ -869,7 +953,9 @@
 										}}
 									>
 										<CheckCircle className="size-3.5" />
-										<div class="flex items-center">{$i18n.t('Enable All')}</div>
+										<div class="flex items-center">
+											{$i18n.t('settings.admin.models.enableAllModels.label')}
+										</div>
 									</button>
 
 									<button
@@ -880,7 +966,9 @@
 										}}
 									>
 										<Minus className="size-3.5" />
-										<div class="flex items-center">{$i18n.t('Disable All')}</div>
+										<div class="flex items-center">
+											{$i18n.t('settings.admin.models.disableAllModels.label')}
+										</div>
 									</button>
 
 									<hr class="mx-1 my-0.5 border-gray-100 dark:border-gray-800" />
@@ -893,7 +981,9 @@
 										}}
 									>
 										<Eye className="size-3.5" />
-										<div class="flex items-center">{$i18n.t('Show All')}</div>
+										<div class="flex items-center">
+											{$i18n.t('settings.admin.models.showAllModels.label')}
+										</div>
 									</button>
 
 									<button
@@ -904,7 +994,9 @@
 										}}
 									>
 										<EyeSlash className="size-3.5" />
-										<div class="flex items-center">{$i18n.t('Hide All')}</div>
+										<div class="flex items-center">
+											{$i18n.t('settings.admin.models.hideAllModels.label')}
+										</div>
 									</button>
 								</DropdownMenu>
 							</div>
@@ -929,16 +1021,8 @@
 								id="model-item-{model.id}"
 							>
 								<div class="self-center pr-1 -ml-1 text-gray-400 dark:text-gray-600">
-									<Tooltip
-										content={canReorderModels
-											? $i18n.t('Drag to reorder')
-											: $i18n.t('Clear filters to reorder')}
-									>
-										<EllipsisVertical
-											className="size-4 {canReorderModels
-												? 'cursor-move model-item-handle'
-												: 'opacity-40'}"
-										/>
+									<Tooltip content={$i18n.t('Drag to reorder')}>
+										<EllipsisVertical className="size-4 cursor-move model-item-handle" />
 									</Tooltip>
 								</div>
 
@@ -958,7 +1042,7 @@
 											>
 												<img
 													src={`${WEBUI_API_BASE_URL}/models/model/profile/image?id=${model.id}&lang=${$i18n.language}`}
-													alt="modelfile profile"
+													alt={$i18n.t('modelfile profile')}
 													class=" rounded-xl size-7 object-cover"
 													loading="lazy"
 													decoding="async"
@@ -1140,6 +1224,11 @@
 									<ModelMenu
 										user={$user}
 										{model}
+										deleteLabel={canResetModel(model) ? $i18n.t('Reset') : $i18n.t('Delete')}
+										deleteHandler={() => {
+											modelToDelete = model;
+											showDeleteModal = true;
+										}}
 										exportHandler={() => {
 											exportModelHandler(model);
 										}}
@@ -1210,7 +1299,7 @@
 
 				<div class="flex justify-end pt-6 text-sm font-normal">
 					<button
-						class="flex items-center gap-2 px-3.5 py-1.5 text-sm font-normal bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full disabled:cursor-not-allowed disabled:opacity-40"
+						class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white disabled:cursor-not-allowed"
 						type="button"
 						disabled={(!modelOrderDirty && !modelDefaultsDirty) ||
 							savingModelOrder ||
@@ -1222,7 +1311,7 @@
 						{$i18n.t('Save')}
 						{#if savingModelOrder || savingModelsSettings}
 							<span class="shrink-0">
-								<Spinner />
+								<Spinner className="size-3" />
 							</span>
 						{/if}
 					</button>
@@ -1231,14 +1320,19 @@
 		</div>
 	{:else}
 		<ModelEditor
+			admin
 			edit
 			model={models.find((m) => m.id === selectedModelId)}
 			preset={false}
 			onSubmit={async (model) => {
 				console.log(model);
-				await upsertModelHandler(model);
+				if (!(await upsertModelHandler(model))) {
+					toast.error($i18n.t('Failed to save model'));
+					return false;
+				}
 				selectedModelId = null;
-				await init();
+				await init().catch((error) => toast.error(`${error}`));
+				return true;
 			}}
 			onBack={async () => {
 				selectedModelId = null;

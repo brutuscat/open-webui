@@ -8,7 +8,7 @@
 	dayjs.extend(relativeTime);
 
 	import { onMount, getContext } from 'svelte';
-	const i18n = getContext('i18n');
+	const i18n = getContext<typeof import('$lib/i18n').default>('i18n');
 
 	import {
 		deleteFeedbackById,
@@ -160,7 +160,7 @@
 			return {
 				id: rest.id,
 				user_id: rest.user_id,
-				chat_id: data?.chat_id ?? '',
+				chat_id: rest.meta?.chat_id ?? '',
 				model_id: data?.model_id ?? '',
 				sibling_model_ids: (data?.sibling_model_ids ?? []).join(';'),
 				rating: data?.rating ?? '',
@@ -279,7 +279,7 @@
 						</button>
 
 						<div slot="content">
-							<DropdownMenu className="w-[10.625rem]">
+							<DropdownMenu className="min-w-[10.625rem]">
 								<button
 									class="select-none flex w-full gap-2 items-center h-[1.6875rem] px-2 text-[0.8125rem] font-normal cursor-pointer hover:bg-gray-50/40 dark:hover:bg-gray-800/40 rounded-xl"
 									type="button"
@@ -321,11 +321,11 @@
 							<th
 								scope="col"
 								class="px-2.5 py-2 font-normal cursor-pointer select-none w-3"
-								on:click={() => setSortKey('user')}
+								on:click={() => setSortKey('username')}
 							>
 								<div class="flex gap-1.5 items-center justify-end">
 									{$i18n.t('User')}
-									{#if orderBy === 'user'}
+									{#if orderBy === 'username'}
 										<span class="font-normal">
 											{#if direction === 'asc'}
 												<ChevronUp className="size-2" />
@@ -492,7 +492,9 @@
 								{/if}
 
 								<td class=" px-3 py-1 text-right font-normal">
-									{dayjs(feedback.updated_at * 1000).fromNow()}
+									{dayjs(feedback.updated_at * 1000)
+										.locale($i18n.language)
+										.fromNow()}
 								</td>
 
 								<td class=" px-3 py-1 text-right font-normal" on:click={(e) => e.stopPropagation()}>

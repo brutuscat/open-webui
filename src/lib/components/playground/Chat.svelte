@@ -17,7 +17,7 @@
 
 	import { chatCompletion } from '$lib/apis/openai';
 
-	import { splitStream } from '$lib/utils';
+	import { splitStream, resolveDefaultModelIds } from '$lib/utils';
 	import Collapsible from '../common/Collapsible.svelte';
 	import Dropdown from '../common/Dropdown.svelte';
 	import DropdownMenu from '../common/DropdownMenu.svelte';
@@ -37,7 +37,7 @@
 	import Download from '../icons/Download.svelte';
 	import EllipsisHorizontal from '../icons/EllipsisHorizontal.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
 
 	let loaded = false;
 
@@ -261,7 +261,7 @@
 
 		const exportData = {
 			chat: {
-				title: 'Playground Chat',
+				title: $i18n.t('Playground Chat'),
 				models: [selectedModelId],
 				params: system ? { system } : {},
 				history: {
@@ -307,13 +307,9 @@
 			await goto('/');
 		}
 
-		if ($settings?.models) {
-			selectedModelId = $settings?.models[0];
-		} else if ($config?.default_models) {
-			selectedModelId = $config?.default_models.split(',')[0];
-		} else {
-			selectedModelId = '';
-		}
+		selectedModelId =
+			resolveDefaultModelIds($models, $settings?.models, $config?.default_models?.split(','))[0] ??
+			'';
 		loaded = true;
 	});
 </script>
@@ -478,9 +474,9 @@
 									? ''
 									: 'outline-hidden'}"
 								aria-pressed={role === 'assistant'}
-								aria-label={$i18n.t(
-									role === 'user' ? 'Switch to Assistant role' : 'Switch to User role'
-								)}
+								aria-label={role === 'user'
+									? $i18n.t('Switch to Assistant role')
+									: $i18n.t('Switch to User role')}
 								on:click={() => {
 									role = role === 'user' ? 'assistant' : 'user';
 								}}

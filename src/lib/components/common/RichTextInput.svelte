@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
-	import equal from 'fast-deep-equal';
+	import { equalEditorJSON } from '$lib/utils/editorJson';
+	import { showCallOverlay, skills, terminalSkills } from '$lib/stores';
 
 	marked.use({
 		breaks: true,
@@ -65,18 +66,19 @@
 		filter: 'table',
 		replacement: function (content, node) {
 			// Extract rows
-			const rows = Array.from(node.querySelectorAll('tr'));
+			const rows = Array.from(node.rows);
 			if (rows.length === 0) return content;
 
 			let markdown = '\n';
 
 			rows.forEach((row, rowIndex) => {
-				const cells = Array.from(row.querySelectorAll('th, td'));
+				const cells = Array.from(row.cells);
 				const cellContents = cells.map((cell) => {
 					// Get the text content and clean it up
 					let cellContent = turndownService.turndown(cell.innerHTML).trim();
 					// Remove extra paragraph tags that might be added
 					cellContent = cellContent.replace(/^\n+|\n+$/g, '');
+					cellContent = cellContent.replace(/\n/g, '<br>');
 					return cellContent;
 				});
 
@@ -133,7 +135,7 @@
 	import { onMount, onDestroy, tick, getContext } from 'svelte';
 	import { createEventDispatcher } from 'svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext<typeof import('$lib/i18n').default>('i18n');
 	const eventDispatch = createEventDispatcher();
 
 	import { Fragment, DOMParser } from 'prosemirror-model';
@@ -141,7 +143,7 @@
 	import { Decoration, DecorationSet } from 'prosemirror-view';
 	import { Editor, Extension, markInputRule, mergeAttributes } from '@tiptap/core';
 
-	import { AIAutocompletion } from './RichTextInput/AutoCompletion.js';
+	import { AIAutocompletion, setFollowUpSuggestion } from './RichTextInput/AutoCompletion.js';
 
 	import StarterKit from '@tiptap/starter-kit';
 
@@ -224,21 +226,22 @@
 	export let documentId = '';
 
 	export let className = 'input-prose min-h-fit h-full';
-	export let placeholder = $i18n.t('Type here...');
-	let _placeholder = placeholder;
+	export let placeholder: string | undefined = undefined;
+	let _placeholder = '';
 
-	$: if (placeholder !== _placeholder) {
-		setPlaceholder();
+	$: if ((placeholder ?? $i18n.t('Type here...')) !== _placeholder) {
+		setPlaceholder(placeholder ?? $i18n.t('Type here...'));
 	}
 
-	const setPlaceholder = () => {
-		_placeholder = placeholder;
+	const setPlaceholder = (value: string) => {
+		_placeholder = value;
 		if (editor) {
 			editor?.view.dispatch(editor.state.tr);
 		}
 	};
 
 	export let richText = true;
+	export let autoFormat = true;
 	export let dragHandle = false;
 	export let link = false;
 	export let image = false;
@@ -316,16 +319,57 @@
 	export let preserveBreaks = false;
 	export let generateAutoCompletion: Function = async () => null;
 	export let autocomplete = false;
+	export let followUpSuggestion = '';
+
+	$: if (editor && !editor.isDestroyed) {
+		setFollowUpSuggestion(editor.view, followUpSuggestion);
+	}
+
 	export let messageInput = false;
 	export let shiftEnter = false;
 	export let largeTextAsFile = false;
 	export let insertPromptAsRichText = false;
 	export let floatingMenuPlacement = 'bottom-start';
 
+	// Keep focus off the chat input during a call so the call overlay's M shortcut works
+	$: suppressAutoFocus = messageInput && $showCallOverlay;
+
 	let content = null;
 	let htmlValue = '';
 	let jsonValue = '';
 	let mdValue = '';
+
+	const serializeContent = (richText: boolean) => {
+		if (!editor) return;
+
+		htmlValue = editor.getHTML();
+		jsonValue = editor.getJSON();
+
+		if (richText) {
+			mdValue = turndownService
+				.turndown(
+					htmlValue
+						.replace(/<p><\/p>/g, '<br/>')
+						.replace(/ {2,}/g, (m) => m.replace(/ /g, '\u00a0'))
+				)
+				.replace(/\u00a0/g, ' ');
+		} else {
+			mdValue = turndownService
+				.turndown(
+					htmlValue
+						// Replace empty paragraphs with line breaks
+						.replace(/<p><\/p>/g, '<br/>')
+						// Replace multiple spaces with non-breaking spaces
+						.replace(/ {2,}/g, (m) => m.replace(/ /g, '\u00a0'))
+						// Replace tabs with non-breaking spaces (preserve indentation)
+						.replace(/\t/g, '\u00a0\u00a0\u00a0\u00a0') // 1 tab = 4 spaces
+				)
+				// Convert non-breaking spaces back to regular spaces for markdown
+				.replace(/\u00a0/g, ' ');
+		}
+	};
+
+	$: serializeContent(richText);
 
 	let provider: SocketIOCollaborationProvider | null = null;
 
@@ -334,6 +378,7 @@
 	let element: Element | null = null;
 
 	let pendingUpdate = null;
+	let destroyed = false;
 
 	const options = {
 		throwOnError: false
@@ -497,10 +542,18 @@
 					const escaped = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 					// Now replace the escaped mention patterns back into real spans
 					const withMentions = escaped.replace(
-						/&lt;([@#$])([\w.\-:/]+)(?:\|([^&]*?))?&gt;|&lt;\/([\w.\-:/]+)\|([^&]*?)&gt;/g,
-						(_, ch, id, label, slashSkillId, slashSkillLabel) => {
+						/&lt;([@#$])([^|&\s]+)(?:\|([^&]*?))?&gt;|&lt;\/([\w.\-:/]+)\|([^&]*?)&gt;/g,
+						(match, ch, id, label, slashSkillId, slashSkillLabel) => {
 							const mentionChar = ch || '$';
 							const mentionId = id || slashSkillId;
+							if (
+								mentionChar === '$' &&
+								![...($skills ?? []), ...($terminalSkills ?? [])].some(
+									(skill) => skill.id === mentionId && skill.is_active
+								)
+							) {
+								return match;
+							}
 							const display = (label || slashSkillLabel)?.length
 								? label || slashSkillLabel
 								: mentionId;
@@ -517,7 +570,9 @@
 		selectNextTemplate(editor.view.state, editor.view.dispatch);
 
 		// Ensure the editor is still valid before trying to focus
-		focus();
+		if (!suppressAutoFocus) {
+			focus();
+		}
 	};
 
 	export const insertContent = (content) => {
@@ -677,7 +732,7 @@
 			// After updating the state, try to find and select the next template
 			setTimeout(() => {
 				const templateFound = selectNextTemplate(editor.view.state, editor.view.dispatch);
-				if (!templateFound) {
+				if (!templateFound && !suppressAutoFocus) {
 					editor.commands.focus('end');
 				}
 			}, 0);
@@ -693,9 +748,9 @@
 					props: {
 						decorations: (state) => {
 							const { selection } = state;
-							const { focused } = this.editor;
+							const { isFocused } = this.editor;
 
-							if (focused || selection.empty) {
+							if (isFocused || selection.empty) {
 								return null;
 							}
 
@@ -767,13 +822,15 @@
 
 		if (collaboration && editable && documentId && socket && user) {
 			const { SocketIOCollaborationProvider } = await import('./RichTextInput/Collaboration');
+			if (destroyed) return;
 			provider = new SocketIOCollaborationProvider(documentId, socket, user, content);
 		}
+		if (destroyed) return;
 		editor = new Editor({
 			element: element,
 			extensions: [
 				StarterKit.configure({
-					link: link,
+					link: link ? { autolink: autoFormat, linkOnPaste: autoFormat } : false,
 					code: false, // Disabled in favor of FixedCode (see workaround above)
 					...(messageInput ? { italic: false } : {}),
 					// When rich text is on, ListKit + CodeBlockLowlight provide these.
@@ -797,7 +854,7 @@
 				...(messageInput ? [PromptItalic] : []),
 				...(dragHandle ? [ListItemDragHandle] : []),
 				Placeholder.configure({ placeholder: () => _placeholder, showOnlyWhenEditable: false }),
-				SelectionDecoration,
+				...(messageInput ? [] : [SelectionDecoration]),
 
 				...(richText
 					? [
@@ -840,11 +897,11 @@
 							})
 						]
 					: []),
-				...(autocomplete
+				...(autocomplete || messageInput
 					? [
 							AIAutocompletion.configure({
 								generateCompletion: async (text) => {
-									if (text.trim().length === 0) {
+									if (!autocomplete || text.trim().length === 0) {
 										return null;
 									}
 
@@ -910,8 +967,8 @@
 				...(collaboration && provider ? [provider.getEditorExtension()] : [])
 			],
 			content: provider ? undefined : content,
-			autofocus: messageInput ? true : false,
-			onTransaction: () => {
+			autofocus: messageInput && !$showCallOverlay,
+			onTransaction: ({ transaction }) => {
 				if (!editor) return;
 
 				// Defer Svelte reactivity trigger to rAF so we don't interleave
@@ -925,30 +982,9 @@
 					});
 				}
 
-				htmlValue = editor.getHTML();
-				jsonValue = editor.getJSON();
-
-				if (richText) {
-					mdValue = turndownService
-						.turndown(
-							htmlValue
-								.replace(/<p><\/p>/g, '<br/>')
-								.replace(/ {2,}/g, (m) => m.replace(/ /g, '\u00a0'))
-						)
-						.replace(/\u00a0/g, ' ');
-				} else {
-					mdValue = turndownService
-						.turndown(
-							htmlValue
-								// Replace empty paragraphs with line breaks
-								.replace(/<p><\/p>/g, '<br/>')
-								// Replace multiple spaces with non-breaking spaces
-								.replace(/ {2,}/g, (m) => m.replace(/ /g, '\u00a0'))
-								// Replace tabs with non-breaking spaces (preserve indentation)
-								.replace(/\t/g, '\u00a0\u00a0\u00a0\u00a0') // 1 tab = 4 spaces
-						)
-						// Convert non-breaking spaces back to regular spaces for markdown
-						.replace(/\u00a0/g, ' ');
+				// Compare the final document to include changes from appended transactions.
+				if (jsonValue === '' || transaction.before !== editor.state.doc) {
+					serializeContent(richText);
 				}
 
 				onChange({
@@ -963,12 +999,8 @@
 					if (raw) {
 						value = htmlValue;
 					} else {
-						if (!preserveBreaks) {
-							mdValue = mdValue.replace(/<br\/>/g, '');
-						}
-
-						if (value !== mdValue) {
-							value = mdValue;
+						if (value !== (preserveBreaks ? mdValue : mdValue.replace(/<br\/>/g, ''))) {
+							value = preserveBreaks ? mdValue : mdValue.replace(/<br\/>/g, '');
 
 							// check if the node is paragraph as well
 							if (editor.isActive('paragraph')) {
@@ -1003,8 +1035,8 @@
 					return false;
 				},
 				handlePaste: (view, event) => {
-					// Force plain-text pasting when richText === false
-					if (!richText) {
+					// Paste literal text when automatic formatting is disabled.
+					if (!richText || !autoFormat) {
 						// swallow HTML completely
 						event.preventDefault();
 						const { state, dispatch } = view;
@@ -1013,6 +1045,11 @@
 							/\r\n/g,
 							'\n'
 						);
+
+						if (state.selection.$from.parent.type.spec.code) {
+							dispatch(state.tr.insertText(plainText).scrollIntoView());
+							return true;
+						}
 
 						const lines = plainText.split('\n');
 						const nodes = [];
@@ -1027,7 +1064,11 @@
 						});
 
 						const fragment = Fragment.fromArray(nodes);
-						dispatch(state.tr.replaceSelectionWith(fragment, false).scrollIntoView());
+						dispatch(
+							state.tr
+								.replaceWith(state.selection.from, state.selection.to, fragment)
+								.scrollIntoView()
+						);
 
 						return true; // handled
 					}
@@ -1279,8 +1320,8 @@
 					floatingMenuElement.style.opacity = '0';
 				}
 			},
-			enableInputRules: richText,
-			enablePasteRules: richText
+			enableInputRules: richText && autoFormat,
+			enablePasteRules: richText && autoFormat
 		});
 
 		provider?.setEditor(editor, () => ({ md: mdValue, html: htmlValue, json: jsonValue }));
@@ -1291,6 +1332,7 @@
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		if (pendingUpdate) {
 			cancelAnimationFrame(pendingUpdate);
 		}
@@ -1311,7 +1353,9 @@
 	const onValueChange = () => {
 		if (!editor) return;
 
-		const jsonValue = editor.getJSON();
+		if (value !== '' && value === jsonValue) return;
+
+		const editorJsonValue = editor.getJSON();
 		const htmlValue = editor.getHTML();
 		let mdValue = turndownService
 			.turndown(
@@ -1330,7 +1374,7 @@
 		}
 
 		if (json) {
-			if (!equal(value, jsonValue)) {
+			if (!equalEditorJSON(value, editorJsonValue)) {
 				editor.commands.setContent(value);
 				selectTemplate();
 			}

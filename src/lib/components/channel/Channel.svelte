@@ -3,6 +3,7 @@
 
 	import { onDestroy, onMount, tick } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import { v4 as uuidv4 } from 'uuid';
 
 	import {
@@ -46,6 +47,11 @@
 
 	$: if (id) {
 		initHandler();
+	}
+
+	$: if (channel && $page.url.searchParams.get('thread')) {
+		threadId = $page.url.searchParams.get('thread');
+		window.history.replaceState(history.state, '', `/channels/${id}`);
 	}
 
 	const scrollToBottom = () => {
@@ -110,6 +116,7 @@
 		messages = null;
 		channel = null;
 		threadId = null;
+		replyToMessage = null;
 
 		typingUsers = [];
 		typingUsersTimeout = {};
@@ -162,7 +169,17 @@
 					messages[idx] = data;
 				}
 			} else if (type === 'message:delete') {
-				messages = messages.filter((message) => message.id !== data.id);
+				messages = messages
+					.filter((message) => message.id !== data.id)
+					.map((message) =>
+						message?.reply_to_message?.id === data.id
+							? { ...message, reply_to_message: null }
+							: message
+					);
+
+				if (replyToMessage?.id === data.id) {
+					replyToMessage = null;
+				}
 
 				if (threadId === data.id) {
 					threadId = null;
@@ -208,7 +225,17 @@
 		}
 	};
 
-	const submitHandler = async ({ content, data }) => {
+	const submitHandler = async ({
+		content,
+		data,
+		channel_id,
+		reply_to_message
+	}: {
+		content: string;
+		data: any;
+		channel_id: string;
+		reply_to_message: any;
+	}) => {
 		if (!content && (data?.files ?? []).length === 0) {
 			return;
 		}
@@ -219,7 +246,7 @@
 			temp_id: tempId,
 			content: content,
 			data: data,
-			reply_to_id: replyToMessage?.id ?? null
+			reply_to_id: reply_to_message?.id ?? null
 		};
 
 		const ts = Date.now() * 1000000; // nanoseconds
@@ -229,23 +256,21 @@
 				id: tempId,
 				user_id: $user?.id,
 				user: $user,
-				reply_to_message: replyToMessage ?? null,
+				reply_to_message: reply_to_message ?? null,
 				created_at: ts,
 				updated_at: ts
 			},
 			...messages
 		];
 
-		const res = await sendMessage(localStorage.token, id, message).catch((error) => {
+		const res = await sendMessage(localStorage.token, channel_id, message).catch((error) => {
 			toast.error(`${error}`);
 			return null;
 		});
 
-		if (res) {
+		if (res && id === channel_id && messagesContainerElement) {
 			messagesContainerElement.scrollTop = messagesContainerElement.scrollHeight;
 		}
-
-		replyToMessage = null;
 	};
 
 	const onChange = async () => {
@@ -379,7 +404,7 @@
 					</div>
 				</div>
 
-				<div class=" pb-[1rem] px-2.5">
+				<div class=" pb-3 px-3">
 					<MessageInput
 						id="root"
 						bind:chatInputElement
@@ -435,7 +460,7 @@
 				maxWidth={640}
 				className="h-full"
 			>
-				<div class="h-full w-full shadow-xl">
+				<div class="h-full w-full border-l border-gray-100/60 dark:border-gray-800/40">
 					<Thread
 						{threadId}
 						{channel}

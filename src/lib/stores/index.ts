@@ -4,6 +4,7 @@ import type { ModelConfig } from '$lib/apis';
 import type { Banner } from '$lib/types';
 import type { Socket } from 'socket.io-client';
 import type { AudioQueue } from '$lib/utils/audio';
+import type { I18nOverrides } from '$lib/utils/translationDictionary';
 
 import emojiShortCodes from '$lib/emoji-shortcodes.json';
 
@@ -68,7 +69,8 @@ export const models: Writable<Model[]> = writable([]);
 
 export const knowledge: Writable<null | Document[]> = writable(null);
 export const tools = writable(null);
-export const skills = writable(null);
+export const skills: Writable<null | any[]> = writable(null);
+export const terminalSkills: Writable<any[]> = writable([]);
 export const functions = writable(null);
 
 export type WorkspaceSection = 'models' | 'knowledge' | 'prompts' | 'skills' | 'tools';
@@ -122,6 +124,19 @@ export const chatRequestQueues: Writable<
 	Record<string, { id: string; prompt: string; files: any[] }[]>
 > = writable({});
 
+export type ChannelQueuedMessage = {
+	id: string;
+	prompt: string;
+	files: any[];
+	user_id: string;
+	channel_id: string;
+	parent_id: string | null;
+	reply_to_message: any;
+	sending?: boolean;
+	error?: string;
+};
+export const channelRequestQueues = writable<Record<string, ChannelQueuedMessage[]>>({});
+
 export const sidebarWidth = writable(245);
 
 export type SettingsModalRequest = {
@@ -144,6 +159,9 @@ export type FileNavOpenRequest = string | { path: string; page?: number | null }
 export const showFileNavPath: Writable<FileNavOpenRequest | null> = writable(null);
 export const showFileNavDir: Writable<string | null> = writable(null);
 export const selectedTerminalId: Writable<string | null> = writable(null);
+export const connectedUserTerminals = writable(
+	new Map<symbol, { terminalId: string; chatId: string }>()
+);
 
 export const artifactCode = writable(null);
 export const artifactContents = writable(null);
@@ -231,6 +249,7 @@ type Settings = {
 	imageCompression?: boolean;
 	imageCompressionSize?: any;
 	textScale?: number;
+	fontFamily?: string | null;
 	widescreenMode?: null;
 	largeTextAsFile?: boolean;
 	promptAutocomplete?: boolean;
@@ -244,7 +263,7 @@ type Settings = {
 	autoTags?: boolean;
 	autoFollowUps?: boolean;
 	splitLargeChunks?(body: any, splitLargeChunks: any): unknown;
-	backgroundImageUrl?: null;
+	backgroundImageUrl?: string | null;
 	landingPageMode?: string;
 	iframeSandboxAllowScripts?: boolean;
 	iframeSandboxAllowForms?: boolean;
@@ -299,8 +318,8 @@ type ModelOptions = {
 };
 
 type AudioSettings = {
-	stt: any;
-	tts: any;
+	stt?: any;
+	tts?: any;
 	STTEngine?: string;
 	TTSEngine?: string;
 	speaker?: string;
@@ -323,15 +342,23 @@ type Document = {
 };
 
 type Config = {
+	audio?: {
+		realtime?: { enabled: boolean; model: string; voice: string };
+		stt: { engine: string };
+		tts: { engine: string; voice: string; split_on: string };
+	};
 	license_metadata: any;
 	status: boolean;
 	name: string;
 	version: string;
 	default_locale: string;
+	i18n?: I18nOverrides;
 	default_models: string;
 	default_pinned_models?: string | null;
-	default_prompt_suggestions: PromptSuggestion[];
+	default_prompt_suggestions: PromptSuggestion[] | null;
+	default_prompt_suggestions_i18n?: Record<string, { suggestion_prompts: PromptSuggestion[] }>;
 	features: {
+		slim?: boolean;
 		auth: boolean;
 		auth_trusted_header: boolean;
 		enable_api_keys: boolean;
@@ -351,8 +378,12 @@ type Config = {
 		enable_community_sharing: boolean;
 		enable_memories: boolean;
 		enable_plugins?: boolean;
+		enable_tools?: boolean;
+		enable_functions?: boolean;
+		enable_tool_servers?: boolean;
 		enable_autocomplete_generation: boolean;
 		enable_direct_connections: boolean;
+		enable_direct_integrations?: boolean;
 		enable_version_update_check: boolean;
 		enable_pyodide_file_persistence?: boolean;
 		folder_max_file_count?: number;

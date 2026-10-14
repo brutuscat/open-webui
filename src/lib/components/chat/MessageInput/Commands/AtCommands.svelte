@@ -15,6 +15,10 @@
 	import { searchKnowledgeBases, searchKnowledgeFiles } from '$lib/apis/knowledge';
 	import { searchFiles } from '$lib/apis/terminal';
 	import { decodeString, isValidHttpUrl, isYoutubeUrl } from '$lib/utils';
+	import {
+		resolveLocalizedModelDescription,
+		resolveLocalizedModelName
+	} from '$lib/utils/localizedContent';
 	import { isTemporaryChatId } from '$lib/utils/chatId';
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
@@ -34,7 +38,6 @@
 	export let filteredItems: any[] = [];
 	let searchDebounceTimer: ReturnType<typeof setTimeout>;
 
-	let folderItems: any[] = [];
 	let filesystemItems: any[] = [];
 	let knowledgeItems: any[] = [];
 	let fileItems: any[] = [];
@@ -46,9 +49,9 @@
 		.filter((model) => !model?.info?.meta?.hidden)
 		.map((model) => ({
 			...model,
-			modelName: model?.name,
+			modelName: resolveLocalizedModelName(model, $i18n.language),
 			tags: model?.info?.meta?.tags?.map((tag: any) => tag.name).join(' '),
-			desc: model?.info?.meta?.description
+			desc: resolveLocalizedModelDescription(model, $i18n.language)
 		}));
 
 	$: fuse = new Fuse(modelItems, {
@@ -94,7 +97,6 @@
 	const getItems = () => {
 		const terminal = getSelectedTerminal();
 		getFilesystemItems(terminal);
-		getFolderItems();
 		getKnowledgeItems();
 		getKnowledgeFileItems();
 	};
@@ -154,16 +156,14 @@
 		return directTerminal?.url ? { url: directTerminal.url, key: directTerminal.key ?? '' } : null;
 	};
 
-	const getFolderItems = () => {
-		folderItems = (($folders ?? []) as any[])
-			.map((folder) => ({
-				...folder,
-				type: 'folder',
-				description: $i18n.t('Folder'),
-				title: folder.name
-			}))
-			.filter((folder: any) => folder.name.toLowerCase().includes(query.toLowerCase()));
-	};
+	$: folderItems = (($folders ?? []) as any[])
+		.map((folder) => ({
+			...folder,
+			type: 'folder',
+			description: $i18n.t('Folder'),
+			title: folder.name
+		}))
+		.filter((folder: any) => folder.name.toLowerCase().includes(query.toLowerCase()));
 
 	const getKnowledgeItems = async () => {
 		const res = await searchKnowledgeBases(localStorage.token, query).catch(() => null);
@@ -341,7 +341,7 @@
 				<div class="flex min-w-0 items-center text-black dark:text-gray-100">
 					<img
 						src={`${WEBUI_API_BASE_URL}/models/model/profile/image?id=${model.id}&lang=${$i18n.language}`}
-						alt={model?.name ?? model.id}
+						alt={resolveLocalizedModelName(model, $i18n.language) ?? model.id}
 						class="mr-2 size-4.5 rounded-full object-cover"
 						on:error={(e) => {
 							// LICENSE covers this Open WebUI fallback logo.
@@ -351,7 +351,7 @@
 						}}
 					/>
 					<div class="min-w-0 truncate">
-						{model.name}
+						{resolveLocalizedModelName(model, $i18n.language)}
 					</div>
 				</div>
 			</button>

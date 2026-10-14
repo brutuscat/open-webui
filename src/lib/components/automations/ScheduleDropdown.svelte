@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type i18nType from '$lib/i18n';
 	import { getContext } from 'svelte';
+	import dayjs from 'dayjs';
 
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
 
@@ -52,7 +53,7 @@
 
 	$: if (frequency === 'ONCE' && !onceDate) {
 		const soon = new Date(Date.now() + 5 * 60_000);
-		onceDate = soon.toISOString().split('T')[0];
+		onceDate = dayjs(soon).format('YYYY-MM-DD');
 		onceTime = `${String(soon.getHours()).padStart(2, '0')}:${String(soon.getMinutes()).padStart(2, '0')}`;
 	}
 
@@ -105,10 +106,10 @@
 	};
 
 	export const parseRrule = (s: string) => {
+		const match = s.match(/DTSTART[^:]*:(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/i);
 		// Detect ONCE (COUNT=1 with DTSTART)
-		if (s.includes('COUNT=1')) {
+		if (/COUNT=1(?!\d)/.test(s)) {
 			frequency = 'ONCE';
-			const match = s.match(/DTSTART:(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})/);
 			if (match) {
 				onceDate = `${match[1]}-${match[2]}-${match[3]}`;
 				onceTime = `${match[4]}:${match[5]}`;
@@ -116,22 +117,26 @@
 			return;
 		}
 		const parts: Record<string, string> = {};
-		s.replace('RRULE:', '')
+		s.split(/\s+/)
+			.filter((line) => !line.toUpperCase().startsWith('DTSTART'))
+			.join('')
+			.replace('RRULE:', '')
 			.split(';')
 			.forEach((p) => {
 				const [k, v] = p.split('=');
 				if (k && v) parts[k] = v;
 			});
 		const freq = parts.FREQ || 'DAILY';
-		if (!['HOURLY', 'DAILY', 'WEEKLY', 'MONTHLY'].includes(freq)) {
+		if (!['HOURLY', 'DAILY', 'WEEKLY', 'MONTHLY'].includes(freq) || parts.COUNT || parts.UNTIL) {
 			frequency = 'CUSTOM';
+			prevFrequency = 'CUSTOM';
 			customRrule = s;
 			return;
 		}
 		frequency = freq;
 		interval = parseInt(parts.INTERVAL || '1');
-		hour = parseInt(parts.BYHOUR || '9');
-		minute = parseInt(parts.BYMINUTE || '0');
+		hour = parseInt(parts.BYHOUR || match?.[4] || '9');
+		minute = parseInt(parts.BYMINUTE || match?.[5] || '0');
 		selectedDays = parts.BYDAY ? parts.BYDAY.split(',') : [];
 		monthDay = parseInt(parts.BYMONTHDAY || '1');
 	};
@@ -229,7 +234,7 @@
 						<input
 							type="date"
 							bind:value={onceDate}
-							min={new Date().toISOString().split('T')[0]}
+							min={dayjs().format('YYYY-MM-DD')}
 							class="bg-transparent outline-hidden text-xs dark:scheme-dark"
 							on:click={(e) => e.stopPropagation()}
 							on:input={onChange}

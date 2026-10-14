@@ -19,6 +19,8 @@
 	marked.use(footnoteExtension(options));
 	marked.use(colonFenceExtension(options));
 	marked.use(disableSingleTilde);
+	// Also set by RichTextInput, but messages can render before any input mounts.
+	marked.use({ breaks: true });
 	marked.use({
 		extensions: [
 			mentionExtension({ triggerChar: '@' }),
@@ -48,7 +50,7 @@
 	export let paragraphTag = 'p';
 	export let editCodeBlock = true;
 	export let topPadding = false;
-	export let allowEmbeds = true;
+	export let allowEmbeds = false;
 
 	export let sourceIds = [];
 

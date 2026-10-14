@@ -23,6 +23,7 @@
 	export let onModel: () => void = () => {};
 	export let onSettings: () => void = () => {};
 	export let onTemporary: () => void = () => {};
+	export let onCreateSkill: () => void = () => {};
 	export let insertTextHandler: (text: string) => void = () => {};
 	export let canCompact: boolean | (() => boolean) = false;
 	export let compactDisabled: boolean | (() => boolean) = false;
@@ -31,6 +32,7 @@
 	export let forkDisabled: boolean | (() => boolean) = false;
 	export let canTemporary: boolean | (() => boolean) = false;
 	export let temporaryEnabled: boolean | (() => boolean) = false;
+	export let hasChatContent = false;
 	export let contextUsage = null;
 
 	$: compactAvailable = typeof canCompact === 'function' ? canCompact() : canCompact;
@@ -53,6 +55,7 @@
 
 	const onKeyDown = (event: KeyboardEvent) => {
 		if (!['ArrowUp', 'ArrowDown', 'Enter', 'Tab', 'Escape'].includes(event.key)) return false;
+		if ((filteredItems ?? []).length === 0) return false;
 
 		if (event.key === 'ArrowUp') {
 			suggestionElement?.selectUp();
@@ -87,7 +90,10 @@
 	}
 </script>
 
-<div class={(filteredItems ?? []).length > 0 ? '' : 'hidden'} id="suggestions-container">
+<div
+	class={(filteredItems ?? []).length > 0 ? '' : 'hidden'}
+	id={(filteredItems ?? []).length > 0 ? 'suggestions-container' : undefined}
+>
 	<DropdownMenu className="w-72 max-w-[calc(100vw-1rem)] overflow-x-hidden font-sans text-xs">
 		<div class="max-h-60 overflow-y-auto overflow-x-hidden scrollbar-thin">
 			{#if char === '/'}
@@ -104,6 +110,7 @@
 					temporaryEnabled={isTemporaryEnabled}
 					{contextPercent}
 					{contextHasThreshold}
+					{hasChatContent}
 					onSelect={(e) => {
 						const { type, data } = e;
 
@@ -132,6 +139,9 @@
 						} else if (type === 'command' && data.id === 'temporary') {
 							command({ id: data.id, label: data.id });
 							onTemporary();
+						} else if (type === 'command' && data.id === 'skills:create') {
+							command({ id: data.id, label: data.id });
+							onCreateSkill();
 						} else if (type === 'skill') {
 							command({
 								id: `${data.id}|${data.name}`,

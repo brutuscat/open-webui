@@ -9,6 +9,7 @@
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import { copyToClipboard, sanitizeResponseContent } from '$lib/utils';
+	import { resolveLocalizedModelDescription } from '$lib/utils/localizedContent';
 	import ArrowUpTray from '$lib/components/icons/ArrowUpTray.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
 	import ModelItemMenu from './ModelItemMenu.svelte';
@@ -17,7 +18,7 @@
 	import Tag from '$lib/components/icons/Tag.svelte';
 	import Label from '$lib/components/icons/Label.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext<typeof import('$lib/i18n').default>('i18n');
 
 	export let selectedModelIdx: number = -1;
 	export let item: any = {};
@@ -32,6 +33,9 @@
 	export let selectionOnly = false;
 
 	export let onClick: () => void = () => {};
+	export let onEdit: () => void = () => {};
+
+	$: localizedDescription = resolveLocalizedModelDescription(item.model, $i18n.language);
 
 	const copyLinkHandler = async (model) => {
 		const baseUrl = window.location.origin;
@@ -54,10 +58,19 @@
 	role="option"
 	aria-selected={isSelected}
 	aria-label={$i18n.t('Select {{modelName}} model', { modelName: item.label })}
-	class="focus-ring group/item flex h-8 w-full cursor-pointer select-none items-center rounded-xl px-2 text-left text-[0.8125rem] font-normal text-gray-700 outline-hidden transition-colors duration-75 hover:bg-gray-50/40 dark:text-gray-100 dark:hover:bg-gray-800/40 {index ===
-		selectedModelIdx && !compareEnabled
-		? 'bg-gray-50/70 dark:bg-gray-800/60'
-		: ''} {isSelected ? 'bg-gray-50/70 dark:bg-gray-800/60' : ''}"
+	class="focus-ring group/item flex h-8 w-full cursor-pointer select-none items-center rounded-xl px-2 text-left text-[0.8125rem] font-normal text-gray-700 outline-hidden transition-colors duration-75 dark:text-gray-100 {($settings?.highContrastMode ??
+	false)
+		? 'hover:bg-gray-200 dark:hover:bg-gray-800'
+		: 'hover:bg-gray-50/40 dark:hover:bg-gray-800/40'} {index === selectedModelIdx &&
+	!compareEnabled
+		? ($settings?.highContrastMode ?? false)
+			? 'bg-gray-200 dark:bg-gray-800'
+			: 'bg-gray-50/70 dark:bg-gray-800/60'
+		: ''} {isSelected
+		? ($settings?.highContrastMode ?? false)
+			? 'bg-gray-200 dark:bg-gray-800'
+			: 'bg-gray-50/70 dark:bg-gray-800/60'
+		: ''}"
 	data-arrow-selected={index === selectedModelIdx}
 	data-value={item.value}
 	on:click={() => {
@@ -158,7 +171,9 @@
 							content={item.model.ollama?.expires_at &&
 							new Date(item.model.ollama?.expires_at * 1000) > new Date()
 								? `${$i18n.t('Unloads {{FROM_NOW}}', {
-										FROM_NOW: dayjs(item.model.ollama?.expires_at * 1000).fromNow()
+										FROM_NOW: dayjs(item.model.ollama?.expires_at * 1000)
+											.locale($i18n.language)
+											.fromNow()
 									})}`
 								: `${$i18n.t('Loaded')}`}
 							className="self-end"
@@ -238,10 +253,10 @@
 					</Tooltip>
 				{/if}
 
-				{#if item.model?.info?.meta?.description}
+				{#if localizedDescription}
 					<Tooltip
 						content={`${marked.parse(
-							sanitizeResponseContent(item.model?.info?.meta?.description).replaceAll('\n', '<br>')
+							sanitizeResponseContent(localizedDescription).replaceAll('\n', '<br>')
 						)}`}
 					>
 						<div class=" translate-y-[1px]">
@@ -292,6 +307,7 @@
 				model={item.model}
 				{pinModelHandler}
 				{deleteModelHandler}
+				{onEdit}
 				copyLinkHandler={() => {
 					copyLinkHandler(item.model);
 				}}

@@ -1,7 +1,7 @@
 import inspect
 import logging
 
-from open_webui.env import ENABLE_PLUGINS
+from open_webui.env import ENABLE_FUNCTIONS
 from open_webui.models.functions import Functions
 from open_webui.utils.plugin import get_function_module_from_cache
 
@@ -10,9 +10,15 @@ log = logging.getLogger(__name__)
 
 class FilterContext:
     def __init__(self):
+        self.active_filters = None
         self.valves_by_id = None
         self.function_valves = {}
         self.user_valves = {}
+
+    async def get_active_filters(self):
+        if self.active_filters is None:
+            self.active_filters = await Functions.get_active_filter_ids()
+        return self.active_filters
 
     async def get_function_valves(self, filter_ids, filter_id, Valves):
         if filter_id not in self.function_valves:
@@ -27,6 +33,12 @@ class FilterContext:
         if user_valves_key not in self.user_valves:
             self.user_valves[user_valves_key] = await get_user_valves(filter_id, user_id, UserValves)
         return self.user_valves[user_valves_key]
+
+
+def get_filter_context(request):
+    if not hasattr(request.state, 'filter_context'):
+        request.state.filter_context = FilterContext()
+    return request.state.filter_context
 
 
 async def get_user_valves(filter_id, user_id, UserValves):
@@ -54,10 +66,10 @@ def get_model_filter_ids(model, active_filters):
 
 
 async def resolve_filter_pipeline(request, model: dict, enabled_filter_ids: list = None):
-    if not ENABLE_PLUGINS:
+    if not ENABLE_FUNCTIONS:
         return [], []
 
-    active_filters = await Functions.get_active_filter_ids()
+    active_filters = await get_filter_context(request).get_active_filters()
     filter_ids = get_model_filter_ids(model, active_filters)
     functions_by_id = {function.id: function for function in await Functions.get_functions_by_ids(filter_ids)}
 
@@ -166,7 +178,7 @@ async def process_filter_function(
         request, filter_id, load_from_db=(filter_type != 'stream'), function=function
     )
     handler = getattr(function_module, filter_type, None)
-    if not handler:
+    if not callable(handler):
         return form_data, valves_by_id, None
 
     skip_files = (
@@ -205,7 +217,7 @@ async def process_filter_functions(
     form_data,
     extra_params,
 ):
-    if not ENABLE_PLUGINS:
+    if not ENABLE_FUNCTIONS:
         return form_data, {}
 
     skip_files = None
