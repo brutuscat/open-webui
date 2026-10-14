@@ -1,3 +1,4 @@
+import json
 import unittest
 import shlex
 from types import SimpleNamespace
@@ -256,7 +257,7 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
             return {"status": "done", "exit_code": 0, "output": []}
 
         tool = native_container_tools({"run_command": {"callable": run_command}})["container.exec"]
-        self.assertIn('"exit_code": 0', await tool["callable"](command=["printf", "ok"]))
+        self.assertEqual(json.loads(await tool["callable"](command=["printf", "ok"]))["exit_code"], 0)
         self.assertEqual(seen, ["printf ok"])
 
     async def test_container_exec_records_bounded_wait_and_output_limit(self):
