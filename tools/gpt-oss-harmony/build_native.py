@@ -37,14 +37,15 @@ def main():
         env[variable] = match[1]
     if args.dependencies_only:
         subprocess.run([npm,'ci','--no-audit','--no-fund'],cwd=ROOT,env=env,check=True)
-        subprocess.run([sys.executable,'-m','pip','install','build'],env=env,check=True)
+        subprocess.run([npm,'run','pyodide:fetch'],cwd=ROOT,env=env,check=True)
+        subprocess.run([sys.executable,'-m','build','--version'],env=env,check=True)
         return
     subprocess.run([npm,'run','crypto:verify'],cwd=ROOT,env=env,check=True)
     env['APP_BUILD_HASH'] = subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip()
     subprocess.run([npm,'run','build'],cwd=ROOT,env=env,check=True)
     assert (ROOT/'build/index.html').is_file(), 'Frontend build missing'
     env['HATCH_BUILD_NO_HOOKS'] = 'true'
-    subprocess.run([sys.executable,'-m','build','--wheel','--outdir',str(ROOT/'dist')],cwd=ROOT,env=env,check=True)
+    subprocess.run([sys.executable,'-m','build','--no-isolation','--wheel','--outdir',str(ROOT/'dist')],cwd=ROOT,env=env,check=True)
     wheels = list((ROOT/'dist').glob('open_webui-0.12.3-*.whl'))
     assert len(wheels) == 1
     record = {'release':'v0.12.3','upstream':PIN,'source':env['APP_BUILD_HASH'],
