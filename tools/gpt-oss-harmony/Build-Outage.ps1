@@ -3,11 +3,14 @@ param()
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $candidate = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$evidence = Join-Path (Split-Path $candidate -Parent) 'v0.12.3-native-build-evidence'
-New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+$evidence = Join-Path (Split-Path $candidate -Parent) ('v0.12.3-native-build-evidence-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+New-Item -ItemType Directory -Path $evidence | Out-Null
 $statePath = Join-Path $evidence 'state.json'
 $state = @{ stage='starting'; started=(Get-Date).ToUniversalTime().ToString('o'); success=$false }
-function Save-State { $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8 }
+function Save-State {
+    try { $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8 }
+    catch { Write-Warning 'Could not save build state; service restoration still proceeds.' }
+}
 function Wait-Model {
     $key = [IO.File]::ReadAllText('C:\Users\mauro\llamacpp\gptoss20b-api-key.txt').Trim()
     $deadline = (Get-Date).AddSeconds(180)
@@ -45,11 +48,11 @@ try {
     $python = Join-Path (Split-Path $candidate -Parent) 'v0.12.3-build-env\Scripts\python.exe'
     $arguments = @('"'+(Join-Path $PSScriptRoot 'upgrade.py')+'"','--build-native','--node-directory','"'+(Join-Path (Split-Path $candidate -Parent) 'build-tools\node-v22.23.3-win-x64')+'"','--frontend-baseline','C:\ProgramData\OpenWebUI\runtime\venv-0.12.0-harmony-20261014\Lib\site-packages\open_webui\frontend')
     $buildProcess = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $candidate -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $evidence 'build.stdout.log') -RedirectStandardError (Join-Path $evidence 'build.stderr.log')
-    # Reserve three minutes of the 15-minute window for model readiness and OWU restoration.
-    $remaining = [math]::Max(0, (11*60 - ((Get-Date)-$outageStarted).TotalSeconds)*1000)
+    # Reserve six minutes of the 15-minute window for model readiness and OWU restoration.
+    $remaining = [math]::Max(0, (9*60 - ((Get-Date)-$outageStarted).TotalSeconds)*1000)
     if (-not $buildProcess.WaitForExit([int]$remaining)) { throw 'Native build timed out; restoring original services.' }
     if ($buildProcess.ExitCode -ne 0) { throw "Native build failed with exit code $($buildProcess.ExitCode)." }
-    $state.success=$true
+    $state.build_complete=$true
 } catch {
     $state.error=$_.Exception.Message
 } finally {
@@ -69,7 +72,8 @@ try {
         if ($version -ne '0.12.0') { throw 'Original OWU did not recover at version 0.12.0.' }
         if ((Get-FileHash -LiteralPath 'C:\ProgramData\Caddy\Caddyfile' -Algorithm SHA256).Hash -ne $caddyHash) { throw 'Caddy configuration changed unexpectedly.' }
         $state.original_services_restored=$true
+        $state.success=$state.ContainsKey('build_complete') -and $state.build_complete
         $state.stage=if ($state.success) {'build-complete-original-restored'} else {'build-held-original-restored'}
-    } catch { $state.restoration_error=$_.Exception.Message; $state.stage='restoration-failed' }
+    } catch { $state.success=$false; $state.restoration_error=$_.Exception.Message; $state.stage='restoration-failed' }
     $state.finished=(Get-Date).ToUniversalTime().ToString('o'); Save-State
 }
