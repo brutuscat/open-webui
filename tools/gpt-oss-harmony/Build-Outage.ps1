@@ -16,7 +16,7 @@ function Wait-Model {
     $deadline = (Get-Date).AddSeconds(180)
     do {
         try {
-            $response = Invoke-WebRequest -Uri 'http://127.0.0.1:8080/health' -Headers @{Authorization="Bearer $key"} -TimeoutSec 5
+            $response = Invoke-WebRequest -Uri 'http://127.0.0.1:8080/health' -Headers @{Authorization="Bearer $key"} -UseBasicParsing -TimeoutSec 5
             if ($response.StatusCode -eq 200) { return }
         } catch { }
         Start-Sleep -Seconds 2
@@ -48,9 +48,12 @@ try {
     $python = Join-Path (Split-Path $candidate -Parent) 'v0.12.3-build-env\Scripts\python.exe'
     $arguments = @('"'+(Join-Path $PSScriptRoot 'upgrade.py')+'"','--build-native','--node-directory','"'+(Join-Path (Split-Path $candidate -Parent) 'build-tools\node-v22.23.3-win-x64')+'"','--frontend-baseline','C:\ProgramData\OpenWebUI\runtime\venv-0.12.0-harmony-20261014\Lib\site-packages\open_webui\frontend')
     $buildProcess = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $candidate -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $evidence 'build.stdout.log') -RedirectStandardError (Join-Path $evidence 'build.stderr.log')
+    # Cache the handle before waiting: Windows PowerShell otherwise loses ExitCode.
+    $null = $buildProcess.Handle
     # Reserve six minutes of the 15-minute window for model readiness and OWU restoration.
     $remaining = [math]::Max(0, (9*60 - ((Get-Date)-$outageStarted).TotalSeconds)*1000)
     if (-not $buildProcess.WaitForExit([int]$remaining)) { throw 'Native build timed out; restoring original services.' }
+    $buildProcess.Refresh()
     if ($buildProcess.ExitCode -ne 0) { throw "Native build failed with exit code $($buildProcess.ExitCode)." }
     $state.build_complete=$true
 } catch {
