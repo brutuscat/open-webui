@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import sys
 import json
 import re
 import subprocess
@@ -115,7 +116,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--destination", type=Path, help="New candidate clone path; must not exist")
     parser.add_argument("--build", action="store_true", help="Build the custom image and run full Harmony tests inside it")
-    args = parser.parse_args()
+    parser.add_argument("--build-native", action="store_true", help="Build this prepared Windows candidate; remaining arguments go to build_native.py")
+    args, remaining = parser.parse_known_args()
+    if args.build_native:
+        if args.build or args.destination:
+            parser.error("--build-native operates on this prepared candidate and cannot be combined with --build or --destination")
+        subprocess.run([sys.executable, str(Path(__file__).with_name("build_native.py")), *remaining], check=True)
+        return
+    if remaining:
+        parser.error("Unrecognized arguments: " + " ".join(remaining))
     source = Path(__file__).resolve().parents[2]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     candidate = (args.destination or source / "tools/gpt-oss-harmony/upgrades" / stamp).resolve()
