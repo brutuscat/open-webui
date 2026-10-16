@@ -16,6 +16,15 @@ from .metrics import emit_native_tool_event
 MAX_CURSORS = 32
 MAX_STATE_BYTES = 20 * 1024 * 1024
 MAX_BROWSER_CALLS = 16
+CITATION_FORMAT = "\u3010{cursor}\u2020L{line_start}-L{line_end}\u3011"
+BROWSER_TOOL_POLICY = (
+    "Use the configured web provider; omit source. "
+    "Search once for an authoritative source, open the relevant result, and use find for a precise term. "
+    "Use a soft budget of four browser calls per answer; after that, answer from the retrieved sources. "
+    "Do not repeat a search or retry a failed call with the same inputs. "
+    f"Cite inspected lines as {CITATION_FORMAT}. "
+    "Every browser-backed factual answer needs an exact line citation; source cards do not replace it."
+)
 
 
 class HarmonyBrowser:
@@ -107,7 +116,7 @@ class HarmonyBrowser:
 
         return (
             f"{result}\n\nCitation reminder: cite inspected lines in the final answer as "
-            f"【{cursor}†Lstart-Lend】."
+            f"{CITATION_FORMAT.format(cursor=cursor, line_start='start', line_end='end')}."
         )
 
     def _state_bytes(self) -> int:

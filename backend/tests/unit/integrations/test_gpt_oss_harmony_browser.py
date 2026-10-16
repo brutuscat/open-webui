@@ -51,6 +51,18 @@ class Backend:
 
 
 class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_browser_specs_supply_citation_policy(self):
+        with patch(
+            "open_webui.integrations.gpt_oss_harmony.dispatch.get_browser",
+            return_value=HarmonyBrowser(Backend()),
+        ):
+            tools = native_browser_tools(SimpleNamespace(state=SimpleNamespace()), {})
+        policy = tools["browser.search"]["spec"]["description"]
+        self.assertIn("\u3010{cursor}\u2020L{line_start}-L{line_end}\u3011", policy)
+        self.assertIn("four browser calls", policy)
+        self.assertIn("configured web provider", policy)
+        self.assertEqual(set(tools), {"browser.search", "browser.open", "browser.find"})
+
     async def test_web_search_selects_native_browser_only_for_explicit_model(self):
         config = {"web.search.enable": True}
         native_tools = {"browser.search": {"spec": {"name": "browser.search"}}}
