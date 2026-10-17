@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -146,6 +147,7 @@ def _read_current(path: Path):
 
 def apply(operations: list[Operation], root: Path) -> None:
     staged: dict[Path, object] = {}
+    preserve_modes: dict[Path, int] = {}
     for operation in operations:
         target = _target(root, operation.path)
         current = staged.get(target, _read_current(target))
@@ -158,6 +160,8 @@ def apply(operations: list[Operation], root: Path) -> None:
                 raise PatchError("cannot update a file that does not exist")
             if not isinstance(current, str):
                 raise PatchError("invalid staged file content")
+            if target.exists():
+                preserve_modes[target] = stat.S_IMODE(target.stat().st_mode)
             staged[target] = _update(current, operation.body)
         elif operation.kind == "Delete":
             if operation.body:
@@ -186,6 +190,8 @@ def apply(operations: list[Operation], root: Path) -> None:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
                 handle.write(content)
+            if target in preserve_modes:
+                os.chmod(temporary, preserve_modes[target])
             os.replace(temporary, target)
         except Exception:
             try:

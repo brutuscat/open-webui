@@ -50,6 +50,34 @@ class Backend:
         )
 
 
+class CitationBackend:
+    source = "web"
+
+    async def search(self, query, topn, session):
+        del query, topn, session
+        return PageContents(
+            url="",
+            title="two results",
+            text="【0†A】\nFirst.\n\n【1†B】\nSecond.",
+            urls={
+                "0": "https://example.test/a",
+                "1": "https://example.test/b",
+            },
+            snippets={},
+        )
+
+    async def fetch(self, url, session):
+        del session
+        name = url.rsplit("/", 1)[-1].upper()
+        return PageContents(
+            url=url,
+            title=name,
+            text=f"{name} first line\n{name} second line",
+            urls={},
+        )
+
+
+
 class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
     async def test_native_browser_specs_supply_citation_policy(self):
         with patch(
@@ -286,6 +314,43 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(event["success"])
         self.assertTrue(event["wait_expired"])
         self.assertTrue(event["output_truncated"])
+
+    async def test_browser_results_keep_per_call_citation_sources(self):
+        browser = HarmonyBrowser(CitationBackend())
+        request = SimpleNamespace(state=SimpleNamespace(gpt_oss_browser=browser))
+
+        search = await browser.search("release notes")
+        opened_a = await browser.open(cursor=0, id=0)
+        opened_b = await browser.open(cursor=0, id=1)
+
+        # Middleware extracts citations only after all non-delegate tool calls
+        # have executed, so each result must retain its own source snapshot.
+        search_sources = browser_citation_sources(request, "browser.search", search)
+        a_sources = browser_citation_sources(request, "browser.open", opened_a)
+        b_sources = browser_citation_sources(request, "browser.open", opened_b)
+
+        self.assertEqual(
+            [item["url"] for item in search_sources[0]["metadata"]],
+            ["https://example.test/a", "https://example.test/b"],
+        )
+        self.assertEqual(a_sources[0]["metadata"][0]["url"], "https://example.test/a")
+        self.assertEqual(b_sources[0]["metadata"][0]["url"], "https://example.test/b")
+        self.assertIn("A first line", a_sources[0]["document"][0])
+        self.assertIn("B first line", b_sources[0]["document"][0])
+
+
+    async def test_failed_browser_result_does_not_consume_later_citation(self):
+        browser = HarmonyBrowser(CitationBackend())
+        request = SimpleNamespace(state=SimpleNamespace(gpt_oss_browser=browser))
+        browser.call_count = MAX_BROWSER_CALLS
+        failed = await browser.open(id="https://example.test/blocked")
+        browser.call_count = 0
+        opened = await browser.open(id="https://example.test/a")
+
+        self.assertTrue(failed.startswith("Error:"))
+        self.assertEqual(browser_citation_sources(request, "browser.open", failed), [])
+        sources = browser_citation_sources(request, "browser.open", opened)
+        self.assertEqual(sources[0]["metadata"][0]["url"], "https://example.test/a")
 
     async def test_browser_results_emit_source_cards(self):
         browser = HarmonyBrowser(Backend())
