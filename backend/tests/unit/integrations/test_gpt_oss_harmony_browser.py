@@ -200,6 +200,17 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("Citation reminder:", result)
         self.assertEqual(browser.tool.tool_state.current_cursor, 0)
 
+    async def test_find_rejects_negative_index_into_an_older_page(self):
+        browser = HarmonyBrowser(CitationBackend())
+        await browser.open(id="https://example.test/a")
+        await browser.open(id="https://example.test/b")
+
+        found = await browser.find("first", cursor=-2)
+
+        self.assertTrue(found.startswith("Error:"))
+        self.assertNotIn("Citation reminder:", found)
+        self.assertEqual(browser.tool.tool_state.current_cursor, 1)
+
     async def test_search_routes_source_aliases_to_the_configured_backend(self):
         browser = HarmonyBrowser(Backend())
 
@@ -362,6 +373,20 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("A first line", a_sources[0]["document"][0])
         self.assertIn("B first line", b_sources[0]["document"][0])
 
+
+    async def test_url_less_open_does_not_consume_later_citation(self):
+        browser = HarmonyBrowser(CitationBackend())
+        request = SimpleNamespace(state=SimpleNamespace(gpt_oss_browser=browser))
+        await browser.search("release notes")
+
+        cursor_view = await browser.open(cursor=0)
+        opened = await browser.open(cursor=0, id=0)
+
+        self.assertFalse(cursor_view.startswith("Error:"))
+        self.assertEqual(browser_citation_sources(request, "browser.open", cursor_view), [])
+        sources = browser_citation_sources(request, "browser.open", opened)
+        self.assertEqual(sources[0]["metadata"][0]["url"], "https://example.test/a")
+        self.assertIsNone(browser.pop_citation_snapshot("browser.open"))
 
     async def test_failed_browser_result_does_not_consume_later_citation(self):
         browser = HarmonyBrowser(CitationBackend())

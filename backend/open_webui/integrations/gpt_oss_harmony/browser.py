@@ -89,14 +89,18 @@ class HarmonyBrowser:
             invalid_find_cursor = False
             if tool_name == "find":
                 requested_cursor = kwargs.get("cursor", -1)
-                invalid_find_cursor = not isinstance(requested_cursor, int) or isinstance(requested_cursor, bool)
+                invalid_find_cursor = (
+                    not isinstance(requested_cursor, int)
+                    or isinstance(requested_cursor, bool)
+                    or requested_cursor < -1
+                )
                 citation_cursor = (
                     requested_cursor
                     if not invalid_find_cursor and requested_cursor >= 0
                     else self.tool.tool_state.current_cursor
                 )
             if invalid_find_cursor:
-                result = "Error: browser.find cursor must be an integer; omit it to use the current page."
+                result = "Error: browser.find cursor must be an integer >= -1; omit it to use the current page."
             elif len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
                 result = f"Error: maximum browser cursor limit ({MAX_CURSORS}) reached."
             elif self.call_count >= MAX_BROWSER_CALLS:
@@ -165,12 +169,11 @@ class HarmonyBrowser:
                 "urls": [str(url) for url in page.urls.values()],
             }
         else:
-            if not page.url:
-                return
+            # URL-less cursor views still occupy a slot in successful-call order.
             snapshot = {
                 "document": str(page.text)[:500],
-                "url": str(page.url),
-                "title": str(page.title or page.url),
+                "url": str(page.url or ""),
+                "title": str(page.title or page.url or ""),
             }
         self.citation_snapshots[tool_name].append(snapshot)
 
