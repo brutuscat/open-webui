@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .browser import get_browser
+from .browser import BROWSER_TOOL_POLICY, get_browser
 
 
 def native_browser_tools(request: Any, user: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -16,7 +16,7 @@ def native_browser_tools(request: Any, user: dict[str, Any]) -> dict[str, dict[s
             "callable": browser.search,
             "spec": {
                 "name": "browser.search",
-                "description": "Search the configured OpenWebUI web provider.",
+                "description": "Search the web. " + BROWSER_TOOL_POLICY,
                 "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "topn": {"type": "integer"}, "source": {"type": "string"}}, "required": ["query"]},
             },
             "type": "builtin",

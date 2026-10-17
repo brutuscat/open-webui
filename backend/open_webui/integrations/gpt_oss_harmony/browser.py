@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import defaultdict, deque
 from typing import Any, AsyncIterator, Callable
 
 from open_webui.vendor.openai_gpt_oss_browser.simple_browser.simple_browser_tool import (
+    Message,
     SimpleBrowserTool,
+    TextContent,
 )
 
 from .browser_backend import OpenWebUIBrowserBackend
@@ -16,15 +19,32 @@ from .metrics import emit_native_tool_event
 MAX_CURSORS = 32
 MAX_STATE_BYTES = 20 * 1024 * 1024
 MAX_BROWSER_CALLS = 16
+CITATION_FORMAT = "\u3010{cursor}\u2020L{line_start}-L{line_end}\u3011"
+BROWSER_TOOL_POLICY = (
+    "Use the configured web provider; omit source. "
+    "Search once for an authoritative source, open the relevant result, and use find for a precise term. "
+    "Use a soft budget of four browser calls per answer; after that, answer from the retrieved sources. "
+    "Do not repeat a search or retry a failed call with the same inputs. "
+    f"Cite inspected lines as {CITATION_FORMAT}. "
+    "Every browser-backed factual answer needs an exact line citation; source cards do not replace it."
+)
+
+
+class _HarmonyBrowserTool(SimpleBrowserTool):
+    """Normalize vendor errors at their explicit creation boundary."""
+
+    def make_error_message(self, error: Exception) -> Message:
+        return self.make_response(content=TextContent(text=f"Error: {error}"))
 
 
 class HarmonyBrowser:
     """Serializes native browser calls and keeps state on the active request only."""
 
     def __init__(self, backend: OpenWebUIBrowserBackend) -> None:
-        self.tool = SimpleBrowserTool(backend=backend)
+        self.tool = _HarmonyBrowserTool(backend=backend)
         self.lock = asyncio.Lock()
         self.call_count = 0
+        self.citation_snapshots: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
 
     async def search(self, query: str, topn: int = 10, source: str | None = None) -> str:
         return await self._call(self.tool.search, source=source, query=query, topn=topn)
@@ -58,13 +78,30 @@ class HarmonyBrowser:
         backend_metrics.clear()
         result = ""
         success = False
+        cursor = -1
         # The reference surface accepts ``source`` but this deployment deliberately
         # exposes exactly one backend: OpenWebUI's configured web provider.  Normalise
         # model-supplied source labels rather than reject them and trigger retry loops.
         if "source" in kwargs:
             kwargs["source"] = None
         async with self.lock:
-            if len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
+            citation_cursor = None
+            invalid_find_cursor = False
+            if tool_name == "find":
+                requested_cursor = kwargs.get("cursor", -1)
+                invalid_find_cursor = (
+                    not isinstance(requested_cursor, int)
+                    or isinstance(requested_cursor, bool)
+                    or requested_cursor < -1
+                )
+                citation_cursor = (
+                    requested_cursor
+                    if not invalid_find_cursor and requested_cursor >= 0
+                    else self.tool.tool_state.current_cursor
+                )
+            if invalid_find_cursor:
+                result = "Error: browser.find cursor must be an integer >= -1; omit it to use the current page."
+            elif len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
                 result = f"Error: maximum browser cursor limit ({MAX_CURSORS}) reached."
             elif self.call_count >= MAX_BROWSER_CALLS:
                 result = (
@@ -79,8 +116,11 @@ class HarmonyBrowser:
                     result = "Error: browser response state exceeded its 20 MiB limit."
                 else:
                     result = self._message_text(messages[-1]) if messages else "Error: browser returned no result."
-        result = self._with_citation_reminder(tool_name, result)
-        success = not result.startswith("Error:")
+            result = self._with_citation_reminder(tool_name, result, citation_cursor)
+            success = not result.startswith("Error:")
+            if success and result:
+                self._capture_citation_snapshot(tool_name, result)
+            cursor = self.tool.tool_state.current_cursor
         latency_ms = round((time.perf_counter() - started) * 1000, 3)
         backend_ms = backend_metrics.get("backend_ms", 0.0)
         emit_native_tool_event({
@@ -92,23 +132,56 @@ class HarmonyBrowser:
             "backend_ms": backend_ms,
             "input_bytes": len(str(kwargs).encode("utf-8")),
             "output_bytes": len(result.encode("utf-8")),
-            "cursor": self.tool.tool_state.current_cursor,
+            "cursor": cursor,
             "cache_hit": False,
         })
         return result
 
-    def _with_citation_reminder(self, tool_name: str, result: str) -> str:
+    def _with_citation_reminder(
+        self, tool_name: str, result: str, citation_cursor: int | None = None
+    ) -> str:
         if tool_name not in {"open", "find"} or result.startswith("Error:"):
             return result
 
-        cursor = self.tool.tool_state.current_cursor
+        cursor = self.tool.tool_state.current_cursor if citation_cursor is None else citation_cursor
         if cursor < 0:
             return result
 
-        return (
+        reminder = (
             f"{result}\n\nCitation reminder: cite inspected lines in the final answer as "
-            f"【{cursor}†Lstart-Lend】."
+            f"{CITATION_FORMAT.format(cursor=cursor, line_start='start', line_end='end')}."
         )
+        if tool_name == "find":
+            reminder += (
+                " Use original page line numbers indicated by 'match at L', "
+                "not the numbered find-result excerpt."
+            )
+        return reminder
+
+    def _capture_citation_snapshot(self, tool_name: str, result: str) -> None:
+        if tool_name not in {"search", "open"} or not self.tool.tool_state.page_stack:
+            return
+
+        page = self.tool.tool_state.get_page()
+        if tool_name == "search":
+            snapshot = {
+                "document": result[:500],
+                "urls": [str(url) for url in page.urls.values()],
+            }
+        else:
+            # URL-less cursor views still occupy a slot in successful-call order.
+            snapshot = {
+                "document": str(page.text)[:500],
+                "url": str(page.url or ""),
+                "title": str(page.title or page.url or ""),
+            }
+        self.citation_snapshots[tool_name].append(snapshot)
+
+    def pop_citation_snapshot(self, tool_name: str) -> dict[str, Any] | None:
+        queue = self.citation_snapshots.get(tool_name.removeprefix("browser."))
+        if not queue:
+            return None
+        return queue.popleft()
 
     def _state_bytes(self) -> int:
         return sum(len(page.text.encode("utf-8")) for page in self.tool.tool_state.pages.values())

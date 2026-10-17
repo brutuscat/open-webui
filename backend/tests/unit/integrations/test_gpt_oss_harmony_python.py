@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 from open_webui.integrations.gpt_oss_harmony.detection import CAPABILITY
 from open_webui.integrations.gpt_oss_harmony.python import jupyter_python_enabled, native_python_tools
+from open_webui.integrations.gpt_oss_harmony.terminal import native_container_tools
 from open_webui.utils.code_interpreter import JupyterCodeExecuter
 from open_webui.utils.tools import get_builtin_tools
 
@@ -54,6 +55,29 @@ class HarmonyPythonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(result)["stdout"], "π=3.14")
         self.assertTrue(tool["native_harmony_hidden"])
         self.assertEqual(tool["spec"]["name"], "python")
+
+    async def test_jupyter_and_terminal_remain_distinct_when_both_are_available(self):
+        jupyter = AsyncMock(return_value=json.dumps({"stdout": "437", "stderr": ""}))
+        shell = AsyncMock(return_value=json.dumps({"stdout": "terminal", "exit_code": 0}))
+        tools = {
+            **native_python_tools({"callable": jupyter}),
+            **native_container_tools({"run_command": {"callable": shell}}),
+        }
+        self.assertEqual(set(tools), {"python", "container.exec"})
+        # Both descriptions must distinguish the two available recipients. The
+        # real-model regression separately verifies automatic recipient choice.
+        for tool in tools.values():
+            description = tool["spec"]["description"]
+            self.assertIn("python", description)
+            self.assertIn("container.exec", description)
+            self.assertIn("Jupyter", description)
+
+        await tools["python"]["callable"](code="print(19*23)")
+        jupyter.assert_awaited_once_with(code="print(19*23)")
+        shell.assert_not_awaited()
+        await tools["container.exec"]["callable"](command=["printf", "terminal"])
+        shell.assert_awaited_once()
+        self.assertEqual(jupyter.await_count, 1)
 
     async def test_invalid_or_failed_calls_are_bounded_and_content_free_in_metrics(self):
         async def execute_code(*, code):

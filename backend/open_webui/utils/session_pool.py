@@ -9,6 +9,8 @@ All pool parameters are configurable via environment variables:
     - AIOHTTP_POOL_CONNECTIONS (default 100) — max total connections
     - AIOHTTP_POOL_CONNECTIONS_PER_HOST (default 30) — per-host limit
     - AIOHTTP_POOL_DNS_TTL (default 300) — DNS cache TTL in seconds
+    - AIOHTTP_POOL_KEEPALIVE_TIMEOUT (default 15) — idle reuse window, seconds;
+      0 disables idle reuse without sending Connection: close to the server
 
 Usage:
     from open_webui.utils.session_pool import get_session, cleanup_response
@@ -33,6 +35,7 @@ from open_webui.env import (
     AIOHTTP_POOL_CONNECTIONS,
     AIOHTTP_POOL_CONNECTIONS_PER_HOST,
     AIOHTTP_POOL_DNS_TTL,
+    AIOHTTP_POOL_KEEPALIVE_TIMEOUT,
 )
 from open_webui.utils.misc import stream_chunks_handler
 
@@ -58,6 +61,7 @@ async def get_session() -> aiohttp.ClientSession:
         connector_kwargs = {
             'ttl_dns_cache': AIOHTTP_POOL_DNS_TTL,
             'enable_cleanup_closed': True,
+            'keepalive_timeout': AIOHTTP_POOL_KEEPALIVE_TIMEOUT,
         }
         if AIOHTTP_POOL_CONNECTIONS is not None:
             connector_kwargs['limit'] = AIOHTTP_POOL_CONNECTIONS

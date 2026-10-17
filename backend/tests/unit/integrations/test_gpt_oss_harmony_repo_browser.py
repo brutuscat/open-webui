@@ -112,10 +112,14 @@ class RepoBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(seen), 4)
         self.assertTrue(all(call["wait"] == 30 and call["tail"] == 200 for call in seen))
         self.assertIn("find -- src -maxdepth 3 -print", seen[0]["command"])
-        self.assertIn("grep -RIn", seen[1]["command"])
+        self.assertIn("grep -rIn", seen[1]["command"])
+        self.assertNotIn("grep -RIn", seen[1]["command"])
         self.assertIn("sed -n 2,4p -- src/app.py | nl -ba -v 2", seen[2]["command"])
         self.assertIn("find -- . -maxdepth 1 -print", seen[3]["command"])
         self.assertTrue(all("/repo" in call["command"] for call in seen))
+        self.assertTrue(all('root_real="$(realpath -e -- .)"' in call["command"] for call in seen))
+        self.assertTrue(all('target_real="$(realpath -e -- ' in call["command"] for call in seen))
+        self.assertTrue(all("repository path escapes the selected root" in call["command"] for call in seen))
 
     async def test_open_file_tolerates_observed_argument_aliases_without_advertising_them(self):
         seen = []

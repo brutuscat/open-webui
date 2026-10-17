@@ -78,6 +78,23 @@ def _bash(repository_root: str, body: str) -> str:
     return f"bash -lc {shlex.quote(script)}"
 
 
+def _guard_target(target: str) -> str:
+    """Resolve the selected path inside the terminal and reject repository escapes."""
+    quoted = shlex.quote(target)
+    return "\n".join(
+        [
+            'root_real="$(realpath -e -- .)"',
+            f'target_real="$(realpath -e -- {quoted})"',
+            'if [ "$root_real" != "/" ]; then',
+            '  case "$target_real" in',
+            '    "$root_real"|"$root_real"/*) ;;',
+            '    *) printf "%s\\n" "repository path escapes the selected root" >&2; exit 64 ;;',
+            "  esac",
+            "fi",
+        ]
+    )
+
+
 def _safe_patch(patch: Any) -> str:
     if not isinstance(patch, str) or not patch.strip():
         raise ValueError("patch must be a non-empty string")
@@ -207,7 +224,8 @@ def native_repo_browser_tools(
             max_depth = _bounded_int(depth, "depth", 3, 0, MAX_DEPTH)
         except ValueError as exc:
             return _error_result("print_tree", exc, len(str(path).encode("utf-8")))
-        command = _bash(root, f"find -- {shlex.quote(target)} -maxdepth {max_depth} -print | LC_ALL=C sort")
+        body = f"{_guard_target(target)}\nfind -- {shlex.quote(target)} -maxdepth {max_depth} -print | LC_ALL=C sort"
+        command = _bash(root, body)
         return await _execute(runner, "print_tree", command, len(str(path).encode("utf-8")))
 
     async def search(path: str | None = None, query: str | None = None, max_results: int | float | None = None) -> Any:
@@ -220,9 +238,10 @@ def native_repo_browser_tools(
             return _error_result("search", exc, len(str(query).encode("utf-8")))
         body = "\n".join(
             [
+                _guard_target(target),
                 'result_file="$(mktemp)"',
                 'trap \'rm -f "$result_file"\' EXIT',
-                f"if grep -RIn --binary-files=without-match --exclude-dir=.git -- {shlex.quote(query)} {shlex.quote(target)} >\"$result_file\"; then",
+                f"if grep -rIn --binary-files=without-match --exclude-dir=.git -- {shlex.quote(query)} {shlex.quote(target)} >\"$result_file\"; then",
                 "  :",
                 "else",
                 "  status=$?",
@@ -256,10 +275,10 @@ def native_repo_browser_tools(
         except ValueError as exc:
             selected_path = path if path is not None else file_path
             return _error_result("open_file", exc, len(str(selected_path).encode("utf-8")))
-        body = f"sed -n {shlex.quote(f'{start},{end}p')} -- {shlex.quote(target)}"
+        read_body = f"sed -n {shlex.quote(f'{start},{end}p')} -- {shlex.quote(target)}"
         if line_numbers:
-            body += f" | nl -ba -v {start}"
-        command = _bash(root, body)
+            read_body += f" | nl -ba -v {start}"
+        command = _bash(root, f"{_guard_target(target)}\n{read_body}")
         return await _execute(runner, "open_file", command, len(target.encode("utf-8")))
 
     async def list_dir(path: str | None = None, depth: int | float | None = None) -> Any:
@@ -268,7 +287,8 @@ def native_repo_browser_tools(
             max_depth = _bounded_int(depth, "depth", 1, 0, MAX_DEPTH)
         except ValueError as exc:
             return _error_result("list_dir", exc, len(str(path).encode("utf-8")))
-        command = _bash(root, f"find -- {shlex.quote(target)} -maxdepth {max_depth} -print | LC_ALL=C sort")
+        body = f"{_guard_target(target)}\nfind -- {shlex.quote(target)} -maxdepth {max_depth} -print | LC_ALL=C sort"
+        command = _bash(root, body)
         return await _execute(runner, "list_dir", command, len(str(path).encode("utf-8")))
 
     tools = {

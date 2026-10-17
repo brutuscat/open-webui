@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { TerminalContext } from '$lib/types';
+	import { allowsConcurrentCodeInterpreter } from './MessageInput/executorSelection';
 	import { resolveLocalizedFunction } from '$lib/utils/localizedContent';
 	import { functions as localizedFunctions } from '$lib/stores';
 	import DOMPurify from 'dompurify';
@@ -807,6 +808,7 @@
 		| 'web_search'
 		| 'image_generation'
 		| 'code_interpreter'
+		| 'gpt_oss_harmony_native_tools'
 		| 'terminal';
 	type ModelCapabilitiesById = Record<string, Partial<Record<ModelCapability, boolean>>>;
 
@@ -893,15 +895,22 @@
 		$config?.features?.enable_image_generation &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.image_generation);
 
+	let concurrentCodeInterpreter = false;
+	$: concurrentCodeInterpreter = allowsConcurrentCodeInterpreter(
+		selectedModelIds,
+		modelCapabilitiesById,
+		$config?.code?.interpreter_engine
+	);
+
 	let showCodeInterpreterButton = false;
 	$: showCodeInterpreterButton =
-		!$selectedTerminalId &&
+		(!$selectedTerminalId || concurrentCodeInterpreter) &&
 		selectedModelIds.length === codeInterpreterCapableModels.length &&
 		$config?.features?.enable_code_interpreter &&
 		($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter);
 
-	// Disable code interpreter when terminal is active (mutually exclusive)
-	$: if ($selectedTerminalId && codeInterpreterEnabled) {
+	// Preserve exclusivity unless all selected models use independent native executors.
+	$: if ($selectedTerminalId && !concurrentCodeInterpreter && codeInterpreterEnabled) {
 		codeInterpreterEnabled = false;
 	}
 
