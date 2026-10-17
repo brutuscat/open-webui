@@ -8,7 +8,9 @@ from collections import defaultdict, deque
 from typing import Any, AsyncIterator, Callable
 
 from open_webui.vendor.openai_gpt_oss_browser.simple_browser.simple_browser_tool import (
+    Message,
     SimpleBrowserTool,
+    TextContent,
 )
 
 from .browser_backend import OpenWebUIBrowserBackend
@@ -28,11 +30,18 @@ BROWSER_TOOL_POLICY = (
 )
 
 
+class _HarmonyBrowserTool(SimpleBrowserTool):
+    """Normalize vendor errors at their explicit creation boundary."""
+
+    def make_error_message(self, error: Exception) -> Message:
+        return self.make_response(content=TextContent(text=f"Error: {error}"))
+
+
 class HarmonyBrowser:
     """Serializes native browser calls and keeps state on the active request only."""
 
     def __init__(self, backend: OpenWebUIBrowserBackend) -> None:
-        self.tool = SimpleBrowserTool(backend=backend)
+        self.tool = _HarmonyBrowserTool(backend=backend)
         self.lock = asyncio.Lock()
         self.call_count = 0
         self.citation_snapshots: dict[str, deque[dict[str, Any]]] = defaultdict(deque)

@@ -376,6 +376,30 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
         sources = browser_citation_sources(request, "browser.open", opened)
         self.assertEqual(sources[0]["metadata"][0]["url"], "https://example.test/a")
 
+    async def test_vendor_error_does_not_consume_later_citation(self):
+        browser = HarmonyBrowser(CitationBackend())
+        request = SimpleNamespace(state=SimpleNamespace(gpt_oss_browser=browser))
+        await browser.search("release notes")
+
+        failed = await browser.open(cursor=0, id=999)
+        opened = await browser.open(cursor=0, id=0)
+
+        self.assertEqual(browser_citation_sources(request, "browser.open", failed), [])
+        sources = browser_citation_sources(request, "browser.open", opened)
+        self.assertEqual(sources[0]["metadata"][0]["url"], "https://example.test/a")
+        self.assertTrue(failed.startswith("Error:"))
+        self.assertNotIn("Citation reminder:", failed)
+
+    async def test_vendor_error_does_not_capture_previous_page(self):
+        browser = HarmonyBrowser(CitationBackend())
+        request = SimpleNamespace(state=SimpleNamespace(gpt_oss_browser=browser))
+        await browser.open(id="https://example.test/a")
+        failed = await browser.open(cursor=99)
+
+        self.assertTrue(failed.startswith("Error:"))
+        self.assertEqual(browser_citation_sources(request, "browser.open", failed), [])
+        self.assertEqual(len(browser.citation_snapshots["open"]), 1)
+
     async def test_browser_results_emit_source_cards(self):
         browser = HarmonyBrowser(Backend())
         request = SimpleNamespace(state=SimpleNamespace(gpt_oss_browser=browser))
