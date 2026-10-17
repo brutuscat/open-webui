@@ -199,7 +199,7 @@ def native_python_tools(execute_code_tool: dict[str, Any], max_output_bytes: int
                     "and checking results. For Python calculations, use this tool by default unless "
                     "the user explicitly requests the terminal. When the user requests python or Jupyter, call this "
                     "tool rather than running Python through container.exec or answering without execution. "
-                    "Code runs in a stateless isolated Jupyter kernel, separate from the terminal filesystem. "
+                    "Code runs in a fresh Jupyter kernel, independently of the selected terminal session. "
                     "The tool returns execution output; use print(...) for text output. "
                     "Each call starts a fresh kernel: include all required imports and "
                     "variables in every call."

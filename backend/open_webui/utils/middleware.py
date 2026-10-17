@@ -129,6 +129,7 @@ from open_webui.utils.misc import (
 from open_webui.utils.oauth import get_system_oauth_token
 from open_webui.utils.payload import apply_params_to_form_data, apply_system_prompt_to_body, resolve_system_prompt
 from open_webui.integrations.gpt_oss_harmony.detection import enable_native_namespaces, is_native_harmony_model
+from open_webui.integrations.gpt_oss_harmony.execution import native_executor_guidance
 from open_webui.integrations.gpt_oss_harmony.citations import browser_citation_sources
 from open_webui.integrations.gpt_oss_harmony.repo_browser import native_repo_browser_tools
 from open_webui.integrations.gpt_oss_harmony.terminal import native_container_tools
@@ -2937,6 +2938,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     }
                     if namespaces:
                         enable_native_namespaces(form_data, namespaces)
+                    executor_guidance = native_executor_guidance(model, tools_dict)
+                    if executor_guidance:
+                        form_data['messages'] = add_or_update_system_message(
+                            executor_guidance, form_data['messages'], append=True
+                        )
                 if inlet_filter_tools:
                     form_data['tools'].extend(inlet_filter_tools)
             else:
