@@ -76,6 +76,12 @@ class HarmonyBrowser:
         if "source" in kwargs:
             kwargs["source"] = None
         async with self.lock:
+            citation_cursor = None
+            if tool_name == "find":
+                requested_cursor = kwargs.get("cursor", -1)
+                citation_cursor = (
+                    requested_cursor if requested_cursor >= 0 else self.tool.tool_state.current_cursor
+                )
             if len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
                 result = f"Error: maximum browser cursor limit ({MAX_CURSORS}) reached."
             elif self.call_count >= MAX_BROWSER_CALLS:
@@ -91,7 +97,7 @@ class HarmonyBrowser:
                     result = "Error: browser response state exceeded its 20 MiB limit."
                 else:
                     result = self._message_text(messages[-1]) if messages else "Error: browser returned no result."
-            result = self._with_citation_reminder(tool_name, result)
+            result = self._with_citation_reminder(tool_name, result, citation_cursor)
             success = not result.startswith("Error:")
             if success and result:
                 self._capture_citation_snapshot(tool_name, result)
@@ -112,18 +118,26 @@ class HarmonyBrowser:
         })
         return result
 
-    def _with_citation_reminder(self, tool_name: str, result: str) -> str:
+    def _with_citation_reminder(
+        self, tool_name: str, result: str, citation_cursor: int | None = None
+    ) -> str:
         if tool_name not in {"open", "find"} or result.startswith("Error:"):
             return result
 
-        cursor = self.tool.tool_state.current_cursor
+        cursor = self.tool.tool_state.current_cursor if citation_cursor is None else citation_cursor
         if cursor < 0:
             return result
 
-        return (
+        reminder = (
             f"{result}\n\nCitation reminder: cite inspected lines in the final answer as "
             f"{CITATION_FORMAT.format(cursor=cursor, line_start='start', line_end='end')}."
         )
+        if tool_name == "find":
+            reminder += (
+                " Use original page line numbers indicated by 'match at L', "
+                "not the numbered find-result excerpt."
+            )
+        return reminder
 
     def _capture_citation_snapshot(self, tool_name: str, result: str) -> None:
         if tool_name not in {"search", "open"} or not self.tool.tool_state.page_stack:
