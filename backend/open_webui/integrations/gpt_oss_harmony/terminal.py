@@ -146,7 +146,8 @@ def native_container_tools(terminal_tools: dict[str, dict[str, Any]]) -> dict[st
                 "description": (
                     "Execute a shell command through the selected authorized Open Terminal session. "
                     "This is separate from the native python Jupyter tool, when available. "
-                    "Use container.exec for terminal commands and terminal files; use python when "
+                    "Use container.exec for terminal commands and terminal files. For Python calculations, "
+                    "prefer the native python tool when available unless the user explicitly requests the terminal; use python when "
                     "the user requests the python tool or Jupyter. Do not substitute a shell Python "
                     "process for a requested Jupyter execution."
                 ),

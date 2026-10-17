@@ -196,7 +196,8 @@ def native_python_tools(execute_code_tool: dict[str, Any], max_output_bytes: int
                 "description": (
                     "The native python tool is available even when container.exec and a terminal "
                     "are also available. Use python for Python calculations, data analysis, "
-                    "and checking results. When the user requests python or Jupyter, call this "
+                    "and checking results. For Python calculations, use this tool by default unless "
+                    "the user explicitly requests the terminal. When the user requests python or Jupyter, call this "
                     "tool rather than running Python through container.exec or answering without execution. "
                     "Code runs in a stateless isolated Jupyter kernel, separate from the terminal filesystem. "
                     "The tool returns execution output; use print(...) for text output. "
