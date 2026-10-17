@@ -77,12 +77,18 @@ class HarmonyBrowser:
             kwargs["source"] = None
         async with self.lock:
             citation_cursor = None
+            invalid_find_cursor = False
             if tool_name == "find":
                 requested_cursor = kwargs.get("cursor", -1)
+                invalid_find_cursor = not isinstance(requested_cursor, int) or isinstance(requested_cursor, bool)
                 citation_cursor = (
-                    requested_cursor if requested_cursor >= 0 else self.tool.tool_state.current_cursor
+                    requested_cursor
+                    if not invalid_find_cursor and requested_cursor >= 0
+                    else self.tool.tool_state.current_cursor
                 )
-            if len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
+            if invalid_find_cursor:
+                result = "Error: browser.find cursor must be an integer; omit it to use the current page."
+            elif len(self.tool.tool_state.page_stack) >= MAX_CURSORS:
                 result = f"Error: maximum browser cursor limit ({MAX_CURSORS}) reached."
             elif self.call_count >= MAX_BROWSER_CALLS:
                 result = (

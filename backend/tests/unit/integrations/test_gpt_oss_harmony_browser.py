@@ -189,6 +189,17 @@ class HarmonyBrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("【0†Lstart-Lend】", found)
         self.assertNotIn("【1†Lstart-Lend】", found)
 
+    async def test_find_invalid_cursor_returns_tool_error(self):
+        browser = HarmonyBrowser(Backend())
+        await browser.open(id="https://example.test/article")
+
+        for cursor in (None, "invalid", True):
+            with self.subTest(cursor=cursor):
+                result = await browser.find("release", cursor=cursor)
+                self.assertTrue(result.startswith("Error:"))
+                self.assertNotIn("Citation reminder:", result)
+        self.assertEqual(browser.tool.tool_state.current_cursor, 0)
+
     async def test_search_routes_source_aliases_to_the_configured_backend(self):
         browser = HarmonyBrowser(Backend())
 
