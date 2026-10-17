@@ -731,6 +731,15 @@ else:
     except ValueError:
         AIOHTTP_POOL_CONNECTIONS_PER_HOST = None
 
+# Retain aiohttp's 15-second default. Zero disables idle connection reuse
+# without asking the server to close a still-streaming response.
+try:
+    AIOHTTP_POOL_KEEPALIVE_TIMEOUT = float(os.getenv('AIOHTTP_POOL_KEEPALIVE_TIMEOUT', '15'))
+    if not 0 <= AIOHTTP_POOL_KEEPALIVE_TIMEOUT < float('inf'):
+        AIOHTTP_POOL_KEEPALIVE_TIMEOUT = 15.0
+except (ValueError, TypeError):
+    AIOHTTP_POOL_KEEPALIVE_TIMEOUT = 15.0
+
 AIOHTTP_POOL_DNS_TTL = os.getenv('AIOHTTP_POOL_DNS_TTL', '300')
 try:
     AIOHTTP_POOL_DNS_TTL = int(AIOHTTP_POOL_DNS_TTL)
