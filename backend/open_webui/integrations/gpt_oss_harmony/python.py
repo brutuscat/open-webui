@@ -193,7 +193,13 @@ def native_python_tools(execute_code_tool: dict[str, Any], max_output_bytes: int
             "callable": python,
             "spec": {
                 "name": "python",
-                "description": "Execute stateless Python through the isolated Jupyter service. Use print for visible output.",
+                "description": (
+                    "Use this tool to execute Python code for calculations, data analysis, "
+                    "and checking results. Code runs in a stateless isolated Jupyter kernel. "
+                    "The tool returns execution output; use print(...) for text output. "
+                    "Each call starts a fresh kernel: include all required imports and "
+                    "variables in every call."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {"code": {"type": "string"}},
