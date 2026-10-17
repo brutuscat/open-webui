@@ -200,6 +200,8 @@ def native_python_tools(execute_code_tool: dict[str, Any], max_output_bytes: int
                     "the user explicitly requests the terminal. When the user requests python or Jupyter, call this "
                     "tool rather than running Python through container.exec or answering without execution. "
                     "Code runs in a fresh Jupyter kernel, independently of the selected terminal session. "
+                    "Send executable Python source directly, without JSON wrappers, shell syntax, "
+                    "or Markdown fences. "
                     "The tool returns execution output; use print(...) for text output. "
                     "Each call starts a fresh kernel: include all required imports and "
                     "variables in every call."
