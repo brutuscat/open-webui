@@ -1,6 +1,7 @@
 """Local redaction helpers for OpenTelemetry spans exported from Open WebUI."""
 
 import asyncio
+import json
 import re
 from urllib.parse import urlsplit, urlunsplit
 
@@ -11,11 +12,13 @@ from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.trace import Status, StatusCode
 
 _QUOTED_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret)"
+    r"(?i)(?<![A-Za-z0-9])(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|"
+    r"secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)"
     r"(\s*[:=]\s*)(['\"])[^\r\n]*?\3"
 )
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret)"
+    r"(?i)(?<![A-Za-z0-9])(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|"
+    r"secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)"
     r"(\s*[:=]\s*)(['\"]?)[^\s,;\]\}\"']+"
 )
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
@@ -27,7 +30,7 @@ _SPANISH_ID = re.compile(r"(?i)\b(?:\d{8}[A-Z]|[XYZ]\d{7}[A-Z])\b")
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 _SENSITIVE_ATTRIBUTE = re.compile(
     r"(?i)(?:^client\.user\.|(?:^|\.)(?:user\.(?:id|email|name|role)|enduser\.id)"
-    r"(?:$|\.)|(?:^|\.)(?:authorization|cookie|set-cookie|request\.headers|response\.headers)"
+    r"(?:$|\.)|(?:^|\.)(?:authorization|cookie|set-cookie|(?:http\.)?(?:request|response)\.headers?)"
     r"(?:$|\.)|(?:^|\.)(?:db\.statement|db\.query\.text|url\.query)(?:$|\.))"
 )
 
@@ -163,12 +166,33 @@ def trace_streaming_chat_response(response, span, ctx):
 
     async def traced_iterator():
         completed = False
+        pending = b""
+
+        def capture_stream_error(line):
+            line = line.strip()
+            if line.startswith(b"data:"):
+                line = line[5:].strip()
+            if not line or line == b"[DONE]":
+                return
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                return
+            if isinstance(event, dict) and event.get("error"):
+                ctx["response_error"] = True
+
         try:
             with trace.use_span(span, end_on_exit=False):
                 async for chunk in original_iterator:
+                    pending += chunk if isinstance(chunk, bytes) else str(chunk).encode("utf-8")
+                    while b"\n" in pending:
+                        line, pending = pending.split(b"\n", 1)
+                        capture_stream_error(line)
                     yield chunk
+            if pending:
+                capture_stream_error(pending)
             capture_chat_output(span, ctx.get("assistant_message"))
-            span.set_status(Status(StatusCode.OK))
+            span.set_status(Status(StatusCode.ERROR if ctx.get("response_error") else StatusCode.OK))
             completed = True
         except Exception as error:
             span.set_attribute("error.type", type(error).__name__)

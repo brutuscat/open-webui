@@ -9,6 +9,7 @@ from open_webui.utils.telemetry.privacy import (
     safe_url,
     trace_streaming_chat_response,
 )
+from open_webui.utils.telemetry.setup import _build_resource_attributes, _build_trace_headers
 from opentelemetry.sdk.trace import Event, ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -29,6 +30,29 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertNotIn('+34 600 123 456', result)
         self.assertIn('[REDACTED:EMAIL]', result)
 
+    def test_redacts_environment_variable_secret_names(self):
+        result = redact_text(
+            'OPENAI_API_KEY=sk-openai DATABASE_PASSWORD="correct horse battery staple" '
+            'AWS_SECRET_ACCESS_KEY=aws-secret GITHUB_TOKEN=github-secret'
+        )
+        for secret in ('sk-openai', 'correct horse battery staple', 'aws-secret', 'github-secret'):
+            self.assertNotIn(secret, result)
+
+    def test_resource_attributes_keep_explicit_service_name_precedence(self):
+        attributes = _build_resource_attributes('service.name=generic,deployment.environment=prod', 'traces')
+        self.assertEqual(attributes['service.name'], 'traces')
+        self.assertEqual(attributes['deployment.environment'], 'prod')
+
+    def test_trace_headers_override_generic_and_basic_auth(self):
+        headers = _build_trace_headers(
+            'user',
+            'password',
+            'authorization=generic,api-key=generic-key',
+            'authorization=trace,api-key=trace-key',
+        )
+        self.assertEqual(headers['authorization'], 'trace')
+        self.assertEqual(headers['api-key'], 'trace-key')
+
     def test_url_drops_credentials_query_and_fragment(self):
         self.assertEqual(
             safe_url('https://user:password@example.test/path?api_key=secret#fragment'),
@@ -43,6 +67,8 @@ class TelemetryPrivacyTests(unittest.TestCase):
             attributes={
                 'client.user.email': 'alice@example.com',
                 'http.url': 'https://example.test/path?token=secret',
+                'http.request.header.x_api_key': ['live-api-key'],
+                'http.response.header.set_cookie': ['session=opaque-token'],
                 'db.statement': 'select private_value',
                 'input.value': 'hello alice@example.com api_key=secret-value',
             },
@@ -58,6 +84,8 @@ class TelemetryPrivacyTests(unittest.TestCase):
         exported = downstream.get_finished_spans()[0]
         self.assertNotIn('client.user.email', exported.attributes)
         self.assertNotIn('db.statement', exported.attributes)
+        self.assertNotIn('http.request.header.x_api_key', exported.attributes)
+        self.assertNotIn('http.response.header.set_cookie', exported.attributes)
         self.assertEqual(exported.attributes['http.url'], 'https://example.test/path')
         self.assertNotIn('alice@example.com', exported.attributes['input.value'])
         self.assertNotIn('secret-value', exported.attributes['input.value'])
@@ -139,6 +167,25 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertEqual(exported.attributes['error.type'], 'RuntimeError')
         self.assertNotIn('alice@example.com', str(exported))
         self.assertNotIn('secret-value', str(exported))
+
+    def test_stream_provider_error_marks_span_as_error(self):
+        provider = TracerProvider()
+        downstream = InMemorySpanExporter()
+        provider.add_span_processor(SimpleSpanProcessor(RedactingSpanExporter(downstream)))
+        span = provider.get_tracer('test').start_span('chat')
+
+        async def body():
+            yield b'data: {"error":{"message":"provider failed"}}\n\n'
+
+        response = StreamingResponse(body())
+        trace_streaming_chat_response(response, span, {})
+
+        async def consume():
+            return [chunk async for chunk in response.body_iterator]
+
+        self.assertEqual(asyncio.run(consume()), [b'data: {"error":{"message":"provider failed"}}\n\n'])
+        exported = downstream.get_finished_spans()[0]
+        self.assertEqual(exported.status.status_code, StatusCode.ERROR)
 
     def test_stream_cancellation_marks_and_ends_span(self):
         provider = TracerProvider()

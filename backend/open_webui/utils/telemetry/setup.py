@@ -10,6 +10,7 @@ from open_webui.env import (
     OTEL_EXPORTER_OTLP_ENDPOINT,
     OTEL_EXPORTER_OTLP_HEADERS,
     OTEL_EXPORTER_OTLP_INSECURE,
+    OTEL_EXPORTER_OTLP_TRACES_HEADERS,
     OTEL_OTLP_SPAN_EXPORTER,
     OTEL_RESOURCE_ATTRIBUTES,
     OTEL_SERVICE_NAME,
@@ -28,29 +29,48 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from sqlalchemy import Engine
 
 
-def setup(app: FastAPI, db_engine: Engine):
-    # set up trace
-    resource_attributes = {}
-    for attribute in OTEL_RESOURCE_ATTRIBUTES.split(','):
+def _build_resource_attributes(resource_attributes: str, service_name: str):
+    attributes = {}
+    for attribute in resource_attributes.split(','):
         key, separator, value = attribute.partition('=')
         if separator and key.strip():
-            resource_attributes[unquote(key.strip())] = unquote(value.strip())
-    resource_attributes[SERVICE_NAME] = OTEL_SERVICE_NAME
+            attributes[unquote(key.strip())] = unquote(value.strip())
+    attributes[SERVICE_NAME] = service_name
+    return attributes
+
+
+def _build_trace_headers(
+    basic_auth_username: str,
+    basic_auth_password: str,
+    generic_headers: str,
+    trace_headers: str,
+):
+    headers = {}
+    if basic_auth_username and basic_auth_password:
+        auth_string = f'{basic_auth_username}:{basic_auth_password}'
+        headers['authorization'] = f'Basic {b64encode(auth_string.encode()).decode()}'
+
+    for header_source in (generic_headers, trace_headers):
+        for header in header_source.split(','):
+            key, separator, value = header.partition('=')
+            if separator and key.strip():
+                headers[unquote(key.strip())] = unquote(value.strip())
+    return headers
+
+
+def setup(app: FastAPI, db_engine: Engine):
+    # set up trace
+    resource_attributes = _build_resource_attributes(OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME)
     resource = Resource.create(attributes=resource_attributes)
     if ENABLE_OTEL_TRACES:
         trace.set_tracer_provider(TracerProvider(resource=resource))
 
-        # Add basic auth header only if both username and password are not empty
-        headers = {}
-        if OTEL_BASIC_AUTH_USERNAME and OTEL_BASIC_AUTH_PASSWORD:
-            auth_string = f'{OTEL_BASIC_AUTH_USERNAME}:{OTEL_BASIC_AUTH_PASSWORD}'
-            auth_header = b64encode(auth_string.encode()).decode()
-            headers['authorization'] = f'Basic {auth_header}'
-
-        for header in OTEL_EXPORTER_OTLP_HEADERS.split(','):
-            key, separator, value = header.partition('=')
-            if separator and key.strip():
-                headers[unquote(key.strip())] = unquote(value.strip())
+        headers = _build_trace_headers(
+            OTEL_BASIC_AUTH_USERNAME,
+            OTEL_BASIC_AUTH_PASSWORD,
+            OTEL_EXPORTER_OTLP_HEADERS,
+            OTEL_EXPORTER_OTLP_TRACES_HEADERS,
+        )
 
         # otlp export
         if OTEL_OTLP_SPAN_EXPORTER == 'http':
