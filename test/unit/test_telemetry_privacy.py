@@ -7,6 +7,7 @@ from open_webui.utils.telemetry.privacy import (
     capture_chat_span,
     get_chat_user_message,
     redact_text,
+    safe_attributes,
     safe_url,
     trace_streaming_chat_response,
 )
@@ -45,6 +46,23 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertNotIn('bravo', result)
         self.assertNotIn('charlie', result)
         self.assertIn('[REDACTED]', result)
+
+    def test_redacts_secrets_under_quoted_json_keys(self):
+        result = redact_text('{"api_key":"live-secret", "password":"correct horse"}')
+        self.assertNotIn('live-secret', result)
+        self.assertNotIn('correct horse', result)
+
+    def test_drops_legacy_http_targets_and_client_ip_attributes(self):
+        attributes = safe_attributes(
+            {
+                'http.target': '/oauth/callback?code=opaque&state=private#fragment',
+                'client.address': '2001:db8::1234',
+                'net.peer.ip': '2001:db8::abcd',
+            }
+        )
+        self.assertEqual(attributes['http.target'], '/oauth/callback')
+        self.assertNotIn('client.address', attributes)
+        self.assertNotIn('net.peer.ip', attributes)
 
     def test_selects_post_inlet_user_message_for_trace(self):
         filtered = {'role': 'user', 'content': 'redacted prompt'}

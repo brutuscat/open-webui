@@ -12,14 +12,14 @@ from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.trace import Status, StatusCode
 
 _QUOTED_SECRET_ASSIGNMENT = re.compile(
-    r"""(?i)(?<![A-Za-z0-9])(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|"""
-    r"""secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)"""
-    r"""(\s*[:=]\s*)(?P<quoted>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+    r'''(?i)(?<![A-Za-z0-9])(?P<key_quote>["']?)(?P<key>api[_ -]?key|access[_ -]?token|'''
+    r'''refresh[_ -]?token|secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)'''
+    r'''(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<quoted>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')'''
 )
 _SECRET_ASSIGNMENT = re.compile(
-    r"(?i)(?<![A-Za-z0-9])(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|"
-    r"secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)"
-    r"(\s*[:=]\s*)(['\"]?)[^\s,;\]\}\"']+"
+    r'''(?i)(?<![A-Za-z0-9])(?P<key_quote>["']?)(?P<key>api[_ -]?key|access[_ -]?token|'''
+    r'''refresh[_ -]?token|secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)'''
+    r'''(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<value_quote>["']?)[^\s,;\]\}"']+'''
 )
 _BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
@@ -30,6 +30,7 @@ _SPANISH_ID = re.compile(r"(?i)\b(?:\d{8}[A-Z]|[XYZ]\d{7}[A-Z])\b")
 _IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
 _SENSITIVE_ATTRIBUTE = re.compile(
     r"(?i)(?:^client\.user\.|(?:^|\.)(?:user\.(?:id|email|name|role)|enduser\.id)"
+    r"(?:$|\.)|(?:^|\.)(?:client\.address|net\.peer\.ip|net\.sock\.peer\.addr|network\.peer\.address)"
     r"(?:$|\.)|(?:^|\.)(?:authorization|cookie|set-cookie|(?:http\.)?(?:request|response)\.headers?)"
     r"(?:$|\.)|(?:^|\.)(?:db\.statement|db\.query\.text|url\.query)(?:$|\.))"
 )
@@ -41,11 +42,16 @@ def redact_text(value: str) -> str:
         return value
 
     value = _QUOTED_SECRET_ASSIGNMENT.sub(
-        lambda match: f"{match.group(1)}{match.group(2)}{match.group('quoted')[0]}[REDACTED]"
+        lambda match: f"{match.group('key_quote')}{match.group('key')}{match.group('key_quote')}"
+        f"{match.group('separator')}{match.group('quoted')[0]}[REDACTED]"
         f"{match.group('quoted')[-1]}",
         value,
     )
-    value = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value)
+    value = _SECRET_ASSIGNMENT.sub(
+        lambda match: f"{match.group('key_quote')}{match.group('key')}{match.group('key_quote')}"
+        f"{match.group('separator')}[REDACTED]",
+        value,
+    )
     value = _BEARER.sub("Bearer [REDACTED]", value)
     value = _JWT.sub("[REDACTED:JWT]", value)
     value = _EMAIL.sub("[REDACTED:EMAIL]", value)
@@ -72,6 +78,17 @@ def safe_url(value: str) -> str:
         return "[REDACTED:URL]"
 
 
+def safe_http_target(value: str) -> str:
+    """Keep a legacy HTTP request path while dropping query and fragment data."""
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme and parsed.hostname:
+            return safe_url(value)
+        return parsed.path
+    except (TypeError, ValueError):
+        return "[REDACTED:URL]"
+
+
 def get_chat_user_message(metadata, form_data):
     """Return the final direct user message after inlet filters."""
     metadata = metadata or {}
@@ -93,12 +110,22 @@ def safe_attributes(attributes):
         if isinstance(value, str):
             normalized_key = key.lower()
             value = (
-                safe_url(value)
+                safe_http_target(value)
+                if normalized_key == "http.target"
+                else safe_url(value)
                 if normalized_key == "url.full" or normalized_key.endswith((".url", ".url.full"))
                 else redact_text(value)
             )
         elif isinstance(value, (tuple, list)):
-            value = tuple(redact_text(item) if isinstance(item, str) else item for item in value)
+            normalized_key = key.lower()
+            value = tuple(
+                safe_http_target(item)
+                if normalized_key == "http.target" and isinstance(item, str)
+                else redact_text(item)
+                if isinstance(item, str)
+                else item
+                for item in value
+            )
         safe[key] = value
     return safe
 

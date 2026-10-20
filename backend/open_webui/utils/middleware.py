@@ -2643,6 +2643,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         except Exception as e:
             raise Exception(f'{e}')
 
+    # Preserve the direct turn after inlet filters but before memory, search,
+    # file, and citation context can be injected into the provider messages.
+    request.state.telemetry_user_message = copy.deepcopy(
+        get_last_user_message_item(form_data.get('messages') or [])
+    )
+
     features = form_data.pop('features', None) or {}
     extra_params['__features__'] = features
     if features:
@@ -4836,6 +4842,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 raw_obj = JSONCodec.loads(data)
                                 raw_error = raw_obj.get('error') if isinstance(raw_obj, dict) else None
                                 if raw_error:
+                                    ctx['response_error'] = True
                                     if save_to_chat:
                                         try:
                                             await Chats.upsert_message_to_chat_by_id_and_message_id(
@@ -4949,6 +4956,7 @@ async def streaming_chat_response_handler(response, ctx):
                                             response_metadata['usage'] = usage
 
                                         if response_metadata.get('error'):
+                                            ctx['response_error'] = True
                                             await event_emitter(
                                                 {
                                                     'type': 'chat:completion',
@@ -4986,6 +4994,7 @@ async def streaming_chat_response_handler(response, ctx):
                                     if not choices:
                                         error = data.get('error', {})
                                         if error:
+                                            ctx['response_error'] = True
                                             log.error('Provider returned error (streaming): %s', error)
                                             if save_to_chat:
                                                 try:

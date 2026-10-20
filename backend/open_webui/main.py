@@ -1650,7 +1650,10 @@ async def chat_completion(
                 model_id_for_trace = metadata.get('selected_model_id') or form_data.get('model')
                 if not model_id_for_trace and isinstance(model, dict):
                     model_id_for_trace = model.get('id', '')
-                user_message_for_trace = get_chat_user_message(metadata, form_data)
+                if hasattr(request.state, 'telemetry_user_message'):
+                    user_message_for_trace = request.state.telemetry_user_message
+                else:
+                    user_message_for_trace = get_chat_user_message(metadata, form_data)
                 metadata_user_message = metadata.get('user_message')
                 has_message_attachments = bool(
                     metadata.get('files')
