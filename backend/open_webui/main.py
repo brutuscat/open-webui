@@ -245,7 +245,6 @@ from open_webui.utils.middleware import (
     process_chat_response,
 )
 from open_webui.utils.misc import (
-    get_last_user_message_item,
     get_output_text,
     get_response_error_detail,
     merge_model_params,
@@ -275,6 +274,7 @@ from open_webui.utils.session_pool import cleanup_response, get_client_timeout, 
 from open_webui.utils.telemetry.privacy import (
     capture_chat_output,
     capture_chat_span,
+    get_chat_user_message,
     trace_streaming_chat_response,
 )
 from open_webui.utils.tool_approval import (
@@ -1647,16 +1647,17 @@ async def chat_completion(
                     'chat.completion',
                     kind=SpanKind.INTERNAL,
                 )
-                model_id_for_trace = (
-                    model.get('id', form_data.get('model', ''))
-                    if isinstance(model, dict)
-                    else form_data.get('model', '')
-                )
-                user_message_for_trace = metadata.get('user_message') or get_last_user_message_item(
-                    form_data.get('messages') or []
-                )
+                model_id_for_trace = metadata.get('selected_model_id') or form_data.get('model')
+                if not model_id_for_trace and isinstance(model, dict):
+                    model_id_for_trace = model.get('id', '')
+                user_message_for_trace = get_chat_user_message(metadata, form_data)
+                metadata_user_message = metadata.get('user_message')
                 has_message_attachments = bool(
                     metadata.get('files')
+                    or (
+                        isinstance(metadata_user_message, dict)
+                        and metadata_user_message.get('files')
+                    )
                     or (isinstance(user_message_for_trace, dict) and user_message_for_trace.get('files'))
                 )
                 if isinstance(user_message_for_trace, dict):

@@ -12,9 +12,9 @@ from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.trace import Status, StatusCode
 
 _QUOTED_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)(?<![A-Za-z0-9])(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|"
-    r"secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)"
-    r"(\s*[:=]\s*)(['\"])[^\r\n]*?\3"
+    r"""(?i)(?<![A-Za-z0-9])(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|"""
+    r"""secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)"""
+    r"""(\s*[:=]\s*)(?P<quoted>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
 )
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)(?<![A-Za-z0-9])(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|"
@@ -41,7 +41,9 @@ def redact_text(value: str) -> str:
         return value
 
     value = _QUOTED_SECRET_ASSIGNMENT.sub(
-        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]{match.group(3)}", value
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group('quoted')[0]}[REDACTED]"
+        f"{match.group('quoted')[-1]}",
+        value,
     )
     value = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value)
     value = _BEARER.sub("Bearer [REDACTED]", value)
@@ -61,11 +63,26 @@ def safe_url(value: str) -> str:
         if not parsed.scheme or not parsed.hostname:
             return redact_text(value)
         host = parsed.hostname
-        if parsed.port:
+        if ":" in host:
+            host = f"[{host}]"
+        if parsed.port is not None:
             host = f"{host}:{parsed.port}"
         return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
     except (TypeError, ValueError):
         return "[REDACTED:URL]"
+
+
+def get_chat_user_message(metadata, form_data):
+    """Return the final direct user message after inlet filters."""
+    metadata = metadata or {}
+    form_data = form_data or {}
+    if "messages" in form_data:
+        for message in reversed(form_data.get("messages") or []):
+            if isinstance(message, dict) and message.get("role") == "user":
+                return message
+        return None
+    user_message = metadata.get("user_message")
+    return user_message if isinstance(user_message, dict) else None
 
 
 def safe_attributes(attributes):

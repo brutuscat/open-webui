@@ -5,6 +5,7 @@ from open_webui.utils.telemetry.privacy import (
     RedactingSpanExporter,
     capture_chat_output,
     capture_chat_span,
+    get_chat_user_message,
     redact_text,
     safe_url,
     trace_streaming_chat_response,
@@ -38,6 +39,23 @@ class TelemetryPrivacyTests(unittest.TestCase):
         for secret in ('sk-openai', 'correct horse battery staple', 'aws-secret', 'github-secret'):
             self.assertNotIn(secret, result)
 
+    def test_redacts_escaped_quotes_inside_quoted_secrets(self):
+        result = redact_text(r'password="alpha\"bravo charlie"')
+        self.assertNotIn('alpha', result)
+        self.assertNotIn('bravo', result)
+        self.assertNotIn('charlie', result)
+        self.assertIn('[REDACTED]', result)
+
+    def test_selects_post_inlet_user_message_for_trace(self):
+        filtered = {'role': 'user', 'content': 'redacted prompt'}
+        metadata = {'user_message': {'role': 'user', 'content': 'original prompt'}}
+        form_data = {'messages': [{'role': 'system', 'content': 'system'}, filtered]}
+        self.assertIs(get_chat_user_message(metadata, form_data), filtered)
+
+    def test_does_not_fall_back_to_filtered_out_user_message(self):
+        metadata = {'user_message': {'role': 'user', 'content': 'original prompt'}}
+        self.assertIsNone(get_chat_user_message(metadata, {'messages': []}))
+
     def test_resource_attributes_keep_explicit_service_name_precedence(self):
         attributes = _build_resource_attributes('service.name=generic,deployment.environment=prod', 'traces')
         self.assertEqual(attributes['service.name'], 'traces')
@@ -58,6 +76,13 @@ class TelemetryPrivacyTests(unittest.TestCase):
             safe_url('https://user:password@example.test/path?api_key=secret#fragment'),
             'https://example.test/path',
         )
+
+    def test_url_preserves_ipv6_authority_syntax(self):
+        self.assertEqual(
+            safe_url('https://[2001:db8::1]:8443/path?token=secret'),
+            'https://[2001:db8::1]:8443/path',
+        )
+        self.assertEqual(safe_url('https://[2001:db8::1]/path'), 'https://[2001:db8::1]/path')
 
     def test_exporter_removes_sensitive_attributes_and_exception_text(self):
         downstream = InMemorySpanExporter()
