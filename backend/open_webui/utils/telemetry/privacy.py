@@ -1,0 +1,175 @@
+"""Local redaction helpers for OpenTelemetry spans exported from Open WebUI."""
+
+import asyncio
+import re
+from urllib.parse import urlsplit, urlunsplit
+
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import Event, ReadableSpan
+from opentelemetry.sdk.trace.export import SpanExporter
+from opentelemetry.trace import Status, StatusCode
+
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret)"
+    r"(\s*[:=]\s*)(['\"]?)[^\s,;\]\}\"']+"
+)
+_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+_EMAIL = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
+_CARD = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+_PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d(). -]{7,}\d)(?!\w)")
+_SPANISH_ID = re.compile(r"(?i)\b(?:\d{8}[A-Z]|[XYZ]\d{7}[A-Z])\b")
+_IPV4 = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+_SENSITIVE_ATTRIBUTE = re.compile(
+    r"(?i)(?:^client\.user\.|(?:^|\.)(?:user\.(?:id|email|name|role)|enduser\.id)"
+    r"(?:$|\.)|(?:^|\.)(?:authorization|cookie|set-cookie|request\.headers|response\.headers)"
+    r"(?:$|\.)|(?:^|\.)(?:db\.statement|db\.query\.text|url\.query)(?:$|\.))"
+)
+
+
+def redact_text(value: str) -> str:
+    """Mask common credential and direct-identifier patterns before export."""
+    if not isinstance(value, str):
+        return value
+
+    value = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value)
+    value = _BEARER.sub("Bearer [REDACTED]", value)
+    value = _JWT.sub("[REDACTED:JWT]", value)
+    value = _EMAIL.sub("[REDACTED:EMAIL]", value)
+    value = _CARD.sub("[REDACTED:NUMBER]", value)
+    value = _PHONE.sub("[REDACTED:PHONE]", value)
+    value = _SPANISH_ID.sub("[REDACTED:ID]", value)
+    value = _IPV4.sub("[REDACTED:IP]", value)
+    return value
+
+
+def safe_url(value: str) -> str:
+    """Keep request destination and path while dropping credentials and query data."""
+    try:
+        parsed = urlsplit(value)
+        if not parsed.scheme or not parsed.hostname:
+            return redact_text(value)
+        host = parsed.hostname
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    except (TypeError, ValueError):
+        return "[REDACTED:URL]"
+
+
+def safe_attributes(attributes):
+    safe = {}
+    for key, value in (attributes or {}).items():
+        if _SENSITIVE_ATTRIBUTE.search(key):
+            continue
+        if isinstance(value, str):
+            value = safe_url(value) if key.lower().endswith((".url", ".url.full")) else redact_text(value)
+        elif isinstance(value, (tuple, list)):
+            value = tuple(redact_text(item) if isinstance(item, str) else item for item in value)
+        safe[key] = value
+    return safe
+
+
+def _safe_event(event: Event) -> Event:
+    attributes = safe_attributes(event.attributes)
+    if event.name == "exception":
+        attributes = {key: value for key, value in attributes.items() if key == "exception.type"}
+    return Event(event.name, attributes, event.timestamp)
+
+
+class RedactingSpanExporter(SpanExporter):
+    """Sanitize completed spans immediately before delegating them to an exporter."""
+
+    def __init__(self, exporter):
+        self._exporter = exporter
+
+    def export(self, spans):
+        safe_spans = [
+            ReadableSpan(
+                name=redact_text(span.name),
+                context=span.context,
+                parent=span.parent,
+                resource=Resource(attributes=safe_attributes(span.resource.attributes)),
+                attributes=safe_attributes(span.attributes),
+                events=tuple(_safe_event(event) for event in span.events),
+                # Link attributes can contain propagated baggage; omit links rather than
+                # risk exporting unredacted values through a less common path.
+                links=(),
+                kind=span.kind,
+                instrumentation_scope=span.instrumentation_scope,
+                status=Status(
+                    span.status.status_code,
+                    redact_text(span.status.description) if span.status.description else None,
+                ),
+                start_time=span.start_time,
+                end_time=span.end_time,
+            )
+            for span in spans
+        ]
+        return self._exporter.export(safe_spans)
+
+    def shutdown(self):
+        return self._exporter.shutdown()
+
+    def force_flush(self, timeout_millis=30000):
+        force_flush = getattr(self._exporter, "force_flush", None)
+        return force_flush(timeout_millis) if force_flush else True
+
+
+def capture_chat_span(span, model_id: str, user_message, has_files: bool):
+    """Attach only the user's plain-text turn, never assembled context or tool data."""
+    span.set_attribute("openinference.span.kind", "CHAIN")
+    span.set_attribute("llm.model_name", redact_text(str(model_id))[:256])
+    if not has_files and isinstance(user_message, dict):
+        content = user_message.get("content")
+        if isinstance(content, str) and content:
+            span.set_attribute("llm.input_messages.0.message.role", "user")
+            span.set_attribute("llm.input_messages.0.message.content", redact_text(content)[:12000])
+
+
+def capture_chat_output(span, assistant_message):
+    if not isinstance(assistant_message, dict):
+        return
+    content = assistant_message.get("content")
+    if isinstance(content, str) and content:
+        span.set_attribute("llm.output_messages.0.message.role", "assistant")
+        span.set_attribute("llm.output_messages.0.message.content", redact_text(content)[:12000])
+    usage = assistant_message.get("usage")
+    if isinstance(usage, dict):
+        prompt = usage.get("prompt_tokens", usage.get("input_tokens"))
+        completion = usage.get("completion_tokens", usage.get("output_tokens"))
+        if isinstance(prompt, int) and prompt >= 0:
+            span.set_attribute("llm.token_count.prompt", prompt)
+        if isinstance(completion, int) and completion >= 0:
+            span.set_attribute("llm.token_count.completion", completion)
+
+
+def trace_streaming_chat_response(response, span, ctx):
+    """Keep the chat span open and current until the client stream is consumed."""
+    original_iterator = response.body_iterator
+
+    async def traced_iterator():
+        completed = False
+        try:
+            with trace.use_span(span, end_on_exit=False):
+                async for chunk in original_iterator:
+                    yield chunk
+            capture_chat_output(span, ctx.get("assistant_message"))
+            span.set_status(Status(StatusCode.OK))
+            completed = True
+        except Exception as error:
+            span.set_attribute("error.type", type(error).__name__)
+            span.set_status(Status(StatusCode.ERROR))
+            raise
+        except asyncio.CancelledError:
+            span.set_attribute("openinference.stream.cancelled", True)
+            span.set_status(Status(StatusCode.ERROR))
+            raise
+        finally:
+            if not completed and span.is_recording():
+                span.set_attribute("openinference.stream.completed", False)
+            span.end()
+
+    response.body_iterator = traced_iterator()
+    return response

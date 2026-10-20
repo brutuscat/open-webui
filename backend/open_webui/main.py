@@ -26,6 +26,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind, Status, StatusCode
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -89,6 +91,7 @@ from open_webui.env import (
     # OAuth Back-Channel Logout
     ENABLE_OAUTH_BACKCHANNEL_LOGOUT,
     ENABLE_OTEL,
+    ENABLE_OTEL_TRACES,
     ENABLE_PLUGINS,
     ENABLE_PUBLIC_ACTIVE_USERS_COUNT,
     ENABLE_PYODIDE_FILE_PERSISTENCE,
@@ -264,6 +267,11 @@ from open_webui.utils.oauth import (
 from open_webui.utils.plugin import install_tool_and_function_dependencies
 from open_webui.utils.redis import get_redis_client
 from open_webui.utils.session_pool import cleanup_response, get_client_timeout, get_session, stream_wrapper
+from open_webui.utils.telemetry.privacy import (
+    capture_chat_output,
+    capture_chat_span,
+    trace_streaming_chat_response,
+)
 from open_webui.utils.tool_approval import (
     ResolveToolCallForm,
     build_tool_approval_resume_payload,
@@ -1622,13 +1630,35 @@ async def chat_completion(
         )
 
     async def process_chat(request, form_data, user, metadata, model, tasks=None):
+        llm_span = None
         try:
             form_data, metadata, events = await process_chat_payload(request, form_data, user, metadata, model)
 
             if await drain_approved_tool_calls(request, form_data, user, model, metadata):
                 return {'status': True, 'chat_id': metadata.get('chat_id'), 'paused': True}
 
-            response = await chat_completion_handler(request, form_data, user)
+            if ENABLE_OTEL and ENABLE_OTEL_TRACES and getattr(request.state, 'internal', False) is not True:
+                llm_span = trace.get_tracer('open_webui.chat').start_span(
+                    'chat.completion',
+                    kind=SpanKind.INTERNAL,
+                )
+                model_id_for_trace = (
+                    model.get('id', form_data.get('model', ''))
+                    if isinstance(model, dict)
+                    else form_data.get('model', '')
+                )
+                capture_chat_span(
+                    llm_span,
+                    str(model_id_for_trace),
+                    metadata.get('user_message'),
+                    bool(metadata.get('files')),
+                )
+
+            if llm_span is not None:
+                with trace.use_span(llm_span, end_on_exit=False):
+                    response = await chat_completion_handler(request, form_data, user)
+            else:
+                response = await chat_completion_handler(request, form_data, user)
 
             # When the upstream provider returns an error (e.g. HTTP 400
             # content-filter, quota exceeded), generate_chat_completion
@@ -1640,8 +1670,24 @@ async def chat_completion(
 
             ctx = await build_chat_response_context(request, form_data, user, model, metadata, tasks, events)
 
-            return await process_chat_response(response, ctx)
+            if llm_span is None:
+                return await process_chat_response(response, ctx)
+
+            with trace.use_span(llm_span, end_on_exit=False):
+                processed_response = await process_chat_response(response, ctx)
+            if isinstance(processed_response, StreamingResponse):
+                trace_streaming_chat_response(processed_response, llm_span, ctx)
+            else:
+                capture_chat_output(llm_span, ctx.get('assistant_message'))
+                llm_span.set_status(Status(StatusCode.OK))
+                llm_span.end()
+                llm_span = None
+            return processed_response
         except asyncio.CancelledError:
+            if llm_span is not None:
+                llm_span.set_attribute('openinference.stream.cancelled', True)
+                llm_span.set_status(Status(StatusCode.ERROR))
+                llm_span.end()
             log.info('Chat processing was cancelled')
             try:
 
@@ -1655,6 +1701,10 @@ async def chat_completion(
                 pass
             raise  # re-raise to ensure proper task cancellation handling
         except Exception as e:
+            if llm_span is not None:
+                llm_span.set_attribute('error.type', type(e).__name__)
+                llm_span.set_status(Status(StatusCode.ERROR))
+                llm_span.end()
             error_detail = e.detail if isinstance(e, HTTPException) else str(e)
             log.error('Error processing chat payload: %s', error_detail)
             if metadata.get('chat_id') and metadata.get('message_id'):
@@ -2560,7 +2610,7 @@ async def get_app_version():
 @app.get('/api/version/updates')
 async def get_app_latest_release_version(user=Depends(get_verified_user)):
     if not ENABLE_VERSION_UPDATE_CHECK:
-        log.debug(f'Version update check is disabled, returning current version as latest version')
+        log.debug('Version update check is disabled, returning current version as latest version')
         return {'current': VERSION, 'latest': VERSION}
     try:
         timeout = aiohttp.ClientTimeout(total=1)
@@ -2630,7 +2680,7 @@ try:
         log.info('Using Redis for session')
     else:
         raise ValueError('No Redis URL provided')
-except Exception as e:
+except Exception:
     app.add_middleware(
         SessionMiddleware,
         secret_key=WEBUI_SECRET_KEY,
