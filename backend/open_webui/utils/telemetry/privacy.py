@@ -10,6 +10,10 @@ from opentelemetry.sdk.trace import Event, ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.trace import Status, StatusCode
 
+_QUOTED_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret)"
+    r"(\s*[:=]\s*)(['\"])[^\r\n]*?\3"
+)
 _SECRET_ASSIGNMENT = re.compile(
     r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|passwd|secret)"
     r"(\s*[:=]\s*)(['\"]?)[^\s,;\]\}\"']+"
@@ -33,6 +37,9 @@ def redact_text(value: str) -> str:
     if not isinstance(value, str):
         return value
 
+    value = _QUOTED_SECRET_ASSIGNMENT.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{match.group(3)}[REDACTED]{match.group(3)}", value
+    )
     value = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value)
     value = _BEARER.sub("Bearer [REDACTED]", value)
     value = _JWT.sub("[REDACTED:JWT]", value)
@@ -64,7 +71,12 @@ def safe_attributes(attributes):
         if _SENSITIVE_ATTRIBUTE.search(key):
             continue
         if isinstance(value, str):
-            value = safe_url(value) if key.lower().endswith((".url", ".url.full")) else redact_text(value)
+            normalized_key = key.lower()
+            value = (
+                safe_url(value)
+                if normalized_key == "url.full" or normalized_key.endswith((".url", ".url.full"))
+                else redact_text(value)
+            )
         elif isinstance(value, (tuple, list)):
             value = tuple(redact_text(item) if isinstance(item, str) else item for item in value)
         safe[key] = value

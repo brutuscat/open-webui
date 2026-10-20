@@ -244,7 +244,12 @@ from open_webui.utils.middleware import (
     process_chat_payload,
     process_chat_response,
 )
-from open_webui.utils.misc import get_response_error_detail, merge_model_params
+from open_webui.utils.misc import (
+    get_last_user_message_item,
+    get_output_text,
+    get_response_error_detail,
+    merge_model_params,
+)
 from open_webui.utils.model_ids import strip_provider_model_prefix
 from open_webui.utils.models import (
     check_model_access,
@@ -1647,11 +1652,31 @@ async def chat_completion(
                     if isinstance(model, dict)
                     else form_data.get('model', '')
                 )
+                user_message_for_trace = metadata.get('user_message') or get_last_user_message_item(
+                    form_data.get('messages') or []
+                )
+                has_message_attachments = bool(
+                    metadata.get('files')
+                    or (isinstance(user_message_for_trace, dict) and user_message_for_trace.get('files'))
+                )
+                if isinstance(user_message_for_trace, dict):
+                    content = user_message_for_trace.get('content')
+                    if isinstance(content, list):
+                        has_message_attachments = has_message_attachments or any(
+                            not isinstance(item, dict) or item.get('type') != 'text'
+                            for item in content
+                        )
+                        if not has_message_attachments:
+                            user_message_for_trace = {
+                                **user_message_for_trace,
+                                'content': ''.join(item.get('text', '') for item in content),
+                            }
+
                 capture_chat_span(
                     llm_span,
                     str(model_id_for_trace),
-                    metadata.get('user_message'),
-                    bool(metadata.get('files')),
+                    user_message_for_trace,
+                    has_message_attachments,
                 )
 
             if llm_span is not None:
@@ -1678,8 +1703,30 @@ async def chat_completion(
             if isinstance(processed_response, StreamingResponse):
                 trace_streaming_chat_response(processed_response, llm_span, ctx)
             else:
-                capture_chat_output(llm_span, ctx.get('assistant_message'))
-                llm_span.set_status(Status(StatusCode.OK))
+                assistant_message_for_trace = ctx.get('assistant_message')
+                if not assistant_message_for_trace and isinstance(processed_response, JSONResponse):
+                    try:
+                        response_data = JSONCodec.loads(processed_response.body.decode('utf-8', 'replace'))
+                    except (JSONCodec.JSONDecodeError, UnicodeDecodeError):
+                        response_data = {}
+                    if not isinstance(response_data, dict):
+                        response_data = {}
+                    choices = response_data.get('choices', []) if isinstance(response_data, dict) else []
+                    choice_message = choices[0].get('message', {}) if choices else {}
+                    content = choice_message.get('content') if isinstance(choice_message, dict) else None
+                    if isinstance(content, list):
+                        content = ''.join(
+                            item.get('text', '')
+                            for item in content
+                            if isinstance(item, dict) and item.get('type') == 'text'
+                        )
+                    output = response_data.get('output') if isinstance(response_data, dict) else None
+                    assistant_message_for_trace = {
+                        **({'content': content or get_output_text(output)} if content or output else {}),
+                        **({'usage': response_data['usage']} if response_data.get('usage') else {}),
+                    }
+                capture_chat_output(llm_span, assistant_message_for_trace)
+                llm_span.set_status(Status(StatusCode.ERROR if ctx.get('response_error') else StatusCode.OK))
                 llm_span.end()
                 llm_span = None
             return processed_response

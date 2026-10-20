@@ -3993,6 +3993,24 @@ async def outlet_filter_handler(ctx):
             outlet_result = outlet_data
 
         if outlet_result and outlet_result.get('messages'):
+            assistant_result = next(
+                (
+                    message
+                    for message in outlet_result['messages']
+                    if message.get('id') == message_id and message.get('role') == 'assistant'
+                ),
+                next(
+                    (message for message in reversed(outlet_result['messages']) if message.get('role') == 'assistant'),
+                    None,
+                ),
+            )
+            if assistant_result is not None:
+                ctx['assistant_message'] = {
+                    **ctx.get('assistant_message', {}),
+                    **assistant_result,
+                    'content': assistant_result.get('content') or get_output_text(assistant_result.get('output')),
+                }
+
             if not is_unsaved_chat and messages_map:
                 for message in outlet_result['messages']:
                     outlet_message_id = message.get('id')
@@ -4042,6 +4060,8 @@ async def non_streaming_chat_response_handler(response, ctx):
     response, response_data = get_response_data(response)
     if response_data is None:
         return response
+    if 'error' in response_data:
+        ctx['response_error'] = True
 
     chat_id = metadata.get('chat_id') or ''
     save_to_chat = is_saved_chat_id(chat_id)

@@ -30,11 +30,12 @@ from sqlalchemy import Engine
 
 def setup(app: FastAPI, db_engine: Engine):
     # set up trace
-    resource_attributes = {SERVICE_NAME: OTEL_SERVICE_NAME}
+    resource_attributes = {}
     for attribute in OTEL_RESOURCE_ATTRIBUTES.split(','):
         key, separator, value = attribute.partition('=')
         if separator and key.strip():
             resource_attributes[unquote(key.strip())] = unquote(value.strip())
+    resource_attributes[SERVICE_NAME] = OTEL_SERVICE_NAME
     resource = Resource.create(attributes=resource_attributes)
     if ENABLE_OTEL_TRACES:
         trace.set_tracer_provider(TracerProvider(resource=resource))
