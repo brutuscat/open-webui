@@ -128,6 +128,48 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertNotIn('live-secret', result)
         self.assertNotIn('correct horse', result)
 
+    def test_redacts_yaml_secret_scalars_and_block_values(self):
+        result = redact_text(
+            'password: correct horse battery staple\n'
+            'api_key: >-\n  folded secret value\n  second secret line\n'
+            'public_setting: keep this\n'
+            'token: |2-\n    block secret value\n'
+            'next_setting: also keep this\n'
+        )
+        for secret in (
+            'correct horse battery staple',
+            'folded secret value',
+            'second secret line',
+            'block secret value',
+        ):
+            self.assertNotIn(secret, result)
+        self.assertIn('public_setting: keep this', result)
+        self.assertIn('next_setting: also keep this', result)
+
+    def test_redacts_basic_authorization_values_in_text(self):
+        result = redact_text('request failed: Authorization: Basic dXNlcjpwYXNz')
+        self.assertNotIn('dXNlcjpwYXNz', result)
+        self.assertIn('Basic [REDACTED]', result)
+
+    def test_redacts_embedded_connection_url_userinfo(self):
+        result = redact_text(
+            'connection failed DATABASE_URL=postgresql://alice:live-password@db.example/app'
+        )
+        self.assertNotIn('alice', result)
+        self.assertNotIn('live-password', result)
+        self.assertIn('db.example/app', result)
+
+    def test_redacts_percent_encoded_email_path_segments(self):
+        self.assertNotIn('alice%40example.com', redact_text('GET /users/alice%40example.com'))
+        self.assertEqual(
+            safe_url('https://example.test/users/alice%40example.com'),
+            'https://example.test/users/%5BREDACTED:EMAIL%5D',
+        )
+        attributes = safe_attributes(
+            {'http.url': 'https://example.test/users/alice%40example.com'}
+        )
+        self.assertNotIn('alice%40example.com', attributes['http.url'])
+
     def test_drops_legacy_http_targets_and_client_ip_attributes(self):
         attributes = safe_attributes(
             {

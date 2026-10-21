@@ -3,7 +3,7 @@
 import asyncio
 import json
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
@@ -11,17 +11,26 @@ from opentelemetry.sdk.trace import Event, ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter
 from opentelemetry.trace import Status, StatusCode
 
+_SECRET_KEY = (
+    r'(?:[A-Za-z0-9_.-]*[_-])?'
+    r'(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|'
+    r'secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)'
+)
 _QUOTED_SECRET_ASSIGNMENT = re.compile(
-    r"""(?i)(?<![A-Za-z0-9_-])(?P<key_quote>["']?)(?P<key>(?:[A-Za-z0-9_-]*[_-])?(?:api[_ -]?key|access[_ -]?token|"""
-    r"""refresh[_ -]?token|secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token))"""
-    r"""(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<quoted>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
+    rf'''(?i)(?<![A-Za-z0-9_-])(?P<key_quote>["']?)(?P<key>{_SECRET_KEY})'''
+    r'''(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<quoted>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')'''
 )
 _SECRET_ASSIGNMENT = re.compile(
-    r"""(?i)(?<![A-Za-z0-9_-])(?P<key_quote>["']?)(?P<key>(?:[A-Za-z0-9_-]*[_-])?(?:api[_ -]?key|access[_ -]?token|"""
-    r"""refresh[_ -]?token|secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token))"""
-    r"""(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<value_quote>["']?)[^\s,;\]\}"']+"""
+    rf'''(?i)(?<![A-Za-z0-9_-])(?P<key_quote>["']?)(?P<key>{_SECRET_KEY})'''
+    r'''(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<value_quote>["']?)[^\s,;\]\}"']+'''
 )
+_YAML_SECRET_ASSIGNMENT = re.compile(
+    rf'''(?i)^(?P<indent>[ \t]*)(?P<key_quote>["']?)(?P<key>{_SECRET_KEY})'''
+    r'''(?P=key_quote)(?P<separator>[ \t]*:[ \t]*)(?P<value>.*)$'''
+)
+_YAML_BLOCK_SCALAR = re.compile(r'^[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:[ \t]+#.*)?$')
 _BEARER = re.compile(r'(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+')
+_BASIC_AUTH = re.compile(r'(?i)\bBasic\s+[A-Za-z0-9+/]+={0,2}')
 _JWT = re.compile(r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b')
 _EMAIL = re.compile(r'(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b')
 _CARD = re.compile(r'(?<!\d)(?:\d[ -]?){13,19}(?!\d)')
@@ -30,6 +39,9 @@ _SPANISH_ID = re.compile(r'(?i)\b(?:\d{8}[A-Z]|[XYZ]\d{7}[A-Z])\b')
 _IPV4 = re.compile(r'(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])')
 _WEBHOOK_PATH = re.compile(r'(/api/v1/channels/webhooks/)[^/?#\s]+/[^/?#\s]+')
 _UUID_PATH_PARAMETER = re.compile(r'(?i)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=/|[?#\s]|$)')
+_PERCENT_ENCODED_PATH_SEGMENT = re.compile(r'/(?P<segment>[^/?#\s]+)')
+_EMBEDDED_URL = re.compile(r'''(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"']+''')
+_PATH_QUOTE_SAFE = ":@!$&'()*+,;=-._~"
 _MAX_INSPECTED_STREAM_LINE_BYTES = 64 * 1024
 _SENSITIVE_ATTRIBUTE = re.compile(
     r'(?i)(?:^client\.user\.|(?:^|\.)(?:user\.(?:id|email|name|role)|enduser\.id)'
@@ -39,14 +51,48 @@ _SENSITIVE_ATTRIBUTE = re.compile(
 )
 
 
-def redact_text(value: str) -> str:
-    """Mask common credential and direct-identifier patterns before export."""
-    if not isinstance(value, str):
-        return value
+def _redact_yaml_secret_scalars(value: str) -> str:
+    """Redact complete YAML secret scalars, including indented block values."""
+    lines = value.splitlines(keepends=True)
+    redacted_lines = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        content = line.rstrip('\r\n')
+        line_ending = line[len(content) :]
+        match = _YAML_SECRET_ASSIGNMENT.match(content)
+        if not match:
+            redacted_lines.append(line)
+            index += 1
+            continue
 
+        redacted_lines.append(
+            f"{match.group('indent')}{match.group('key_quote')}{match.group('key')}"
+            f"{match.group('key_quote')}{match.group('separator')}[REDACTED]{line_ending}"
+        )
+        if not _YAML_BLOCK_SCALAR.fullmatch(match.group('value').strip()):
+            index += 1
+            continue
+
+        base_indent = len(match.group('indent'))
+        index += 1
+        while index < len(lines):
+            next_content = lines[index].rstrip('\r\n')
+            if next_content.strip() and len(next_content) - len(next_content.lstrip(' \t')) <= base_indent:
+                break
+            index += 1
+    return ''.join(redacted_lines)
+
+
+def _redact_text(value: str, *, sanitize_embedded_urls: bool) -> str:
+    # Strip URL userinfo before email and secret patterns can partially rewrite it.
+    if sanitize_embedded_urls:
+        value = _EMBEDDED_URL.sub(lambda match: safe_url(match.group(0)), value)
+    value = _redact_yaml_secret_scalars(value)
     # Webhook authentication lives in the path, including in HTTP span names.
     value = _WEBHOOK_PATH.sub(r'\1{webhook_id}/{token}', value)
     value = _UUID_PATH_PARAMETER.sub('/{id}', value)
+    value = _BASIC_AUTH.sub('Basic [REDACTED]', value)
     value = _QUOTED_SECRET_ASSIGNMENT.sub(
         lambda match: (
             f'{match.group("key_quote")}{match.group("key")}{match.group("key_quote")}'
@@ -69,7 +115,31 @@ def redact_text(value: str) -> str:
     value = _PHONE.sub('[REDACTED:PHONE]', value)
     value = _SPANISH_ID.sub('[REDACTED:ID]', value)
     value = _IPV4.sub('[REDACTED:IP]', value)
+    if sanitize_embedded_urls:
+        value = _PERCENT_ENCODED_PATH_SEGMENT.sub(_redact_encoded_path_segment, value)
     return value
+
+
+def redact_text(value: str) -> str:
+    """Mask common credential and direct-identifier patterns before export."""
+    if not isinstance(value, str):
+        return value
+    return _redact_text(value, sanitize_embedded_urls=True)
+
+
+def _redact_encoded_path_segment(match):
+    segment = match.group('segment')
+    decoded = unquote(segment)
+    redacted = _redact_text(decoded, sanitize_embedded_urls=False)
+    if redacted == decoded:
+        return match.group(0)
+    return f"/{quote(redacted, safe=_PATH_QUOTE_SAFE)}"
+
+
+def _redact_url_path(path: str) -> str:
+    path = _WEBHOOK_PATH.sub(r'\1{webhook_id}/{token}', path)
+    path = _UUID_PATH_PARAMETER.sub('/{id}', path)
+    return _PERCENT_ENCODED_PATH_SEGMENT.sub(_redact_encoded_path_segment, path)
 
 
 def safe_url(value: str) -> str:
@@ -83,7 +153,7 @@ def safe_url(value: str) -> str:
             host = f'[{host}]'
         if parsed.port is not None:
             host = f'{host}:{parsed.port}'
-        return urlunsplit((parsed.scheme, host, redact_text(parsed.path), '', ''))
+        return urlunsplit((parsed.scheme, host, _redact_url_path(parsed.path), '', ''))
     except (TypeError, ValueError):
         return '[REDACTED:URL]'
 
@@ -94,7 +164,7 @@ def safe_http_target(value: str) -> str:
         parsed = urlsplit(value)
         if parsed.scheme and parsed.hostname:
             return safe_url(value)
-        return redact_text(parsed.path)
+        return _redact_url_path(parsed.path)
     except (TypeError, ValueError):
         return '[REDACTED:URL]'
 
