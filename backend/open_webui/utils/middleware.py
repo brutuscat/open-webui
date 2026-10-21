@@ -2645,9 +2645,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Preserve the direct turn after inlet filters but before memory, search,
     # file, and citation context can be injected into the provider messages.
-    request.state.telemetry_user_message = copy.deepcopy(
-        get_last_user_message_item(form_data.get('messages') or [])
-    )
+    # Return it directly: fan-out tasks share request.state, but not this local.
+    telemetry_user_message = copy.deepcopy(get_last_user_message_item(form_data.get('messages') or []))
 
     features = form_data.pop('features', None) or {}
     extra_params['__features__'] = features
@@ -3120,7 +3119,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     form_data = normalize_messages_for_model(form_data)
 
-    return form_data, metadata, events
+    return form_data, metadata, events, telemetry_user_message
 
 
 async def get_event_emitter_and_caller(metadata):

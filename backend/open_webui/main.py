@@ -274,7 +274,6 @@ from open_webui.utils.session_pool import cleanup_response, get_client_timeout, 
 from open_webui.utils.telemetry.privacy import (
     capture_chat_output,
     capture_chat_span,
-    get_chat_user_message,
     trace_streaming_chat_response,
 )
 from open_webui.utils.tool_approval import (
@@ -1637,7 +1636,9 @@ async def chat_completion(
     async def process_chat(request, form_data, user, metadata, model, tasks=None):
         llm_span = None
         try:
-            form_data, metadata, events = await process_chat_payload(request, form_data, user, metadata, model)
+            form_data, metadata, events, user_message_for_trace = await process_chat_payload(
+                request, form_data, user, metadata, model
+            )
 
             if await drain_approved_tool_calls(request, form_data, user, model, metadata):
                 return {'status': True, 'chat_id': metadata.get('chat_id'), 'paused': True}
@@ -1650,25 +1651,17 @@ async def chat_completion(
                 model_id_for_trace = metadata.get('selected_model_id') or form_data.get('model')
                 if not model_id_for_trace and isinstance(model, dict):
                     model_id_for_trace = model.get('id', '')
-                if hasattr(request.state, 'telemetry_user_message'):
-                    user_message_for_trace = request.state.telemetry_user_message
-                else:
-                    user_message_for_trace = get_chat_user_message(metadata, form_data)
                 metadata_user_message = metadata.get('user_message')
                 has_message_attachments = bool(
                     metadata.get('files')
-                    or (
-                        isinstance(metadata_user_message, dict)
-                        and metadata_user_message.get('files')
-                    )
+                    or (isinstance(metadata_user_message, dict) and metadata_user_message.get('files'))
                     or (isinstance(user_message_for_trace, dict) and user_message_for_trace.get('files'))
                 )
                 if isinstance(user_message_for_trace, dict):
                     content = user_message_for_trace.get('content')
                     if isinstance(content, list):
                         has_message_attachments = has_message_attachments or any(
-                            not isinstance(item, dict) or item.get('type') != 'text'
-                            for item in content
+                            not isinstance(item, dict) or item.get('type') != 'text' for item in content
                         )
                         if not has_message_attachments:
                             user_message_for_trace = {

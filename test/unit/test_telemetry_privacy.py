@@ -1,5 +1,8 @@
 import asyncio
+import json
+import tracemalloc
 import unittest
+from unittest.mock import patch
 
 from open_webui.utils.telemetry.privacy import (
     RedactingSpanExporter,
@@ -12,6 +15,7 @@ from open_webui.utils.telemetry.privacy import (
     trace_streaming_chat_response,
 )
 from open_webui.utils.telemetry.setup import _build_resource_attributes, _build_trace_headers
+from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 from opentelemetry.sdk.trace import Event, ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -20,10 +24,52 @@ from starlette.responses import StreamingResponse
 
 
 class TelemetryPrivacyTests(unittest.TestCase):
+    def test_redacts_prefixed_quoted_secret_keys(self):
+        secrets = {
+            'OPENAI_API_KEY': 'opaque-live-credential',
+            'DATABASE_PASSWORD': 'correct horse battery staple',
+            'AWS_SECRET_ACCESS_KEY': 'alpha"bravo charlie',
+            'GITHUB_TOKEN': 'opaque-github-credential',
+            '_SERVICE__API_KEY': 'opaque-prefixed-credential',
+        }
+        for key, secret in secrets.items():
+            with self.subTest(key=key):
+                text = json.dumps({key: secret, 'model': 'public-model'})
+                redacted = redact_text(text)
+                self.assertIn(key, redacted)
+                self.assertIn('public-model', redacted)
+                self.assertIn('[REDACTED]', redacted)
+                for part in secret.replace('"', ' ').split():
+                    self.assertNotIn(part, redacted)
+                attributes = safe_attributes({'input.value': text, 'config': [text]})
+                self.assertNotIn('opaque-', str(attributes))
+                self.assertNotIn('correct horse', str(attributes))
+                self.assertNotIn('bravo charlie', str(attributes))
+
+    def test_exporter_redacts_webhook_credentials_in_all_http_locations(self):
+        path = '/api/v1/channels/webhooks/hook-id/opaque-live-credential'
+        safe_path = '/api/v1/channels/webhooks/{webhook_id}/{token}'
+        downstream = InMemorySpanExporter()
+        source = ReadableSpan(
+            name=f'POST {path}',
+            attributes={
+                'url.full': f'https://example.test{path}?code=private#fragment',
+                'http.url': f'https://example.test{path}',
+                'http.target': path + '?code=private',
+                'url.path': path,
+            },
+        )
+        RedactingSpanExporter(downstream).export((source,))
+        exported = downstream.get_finished_spans()[0]
+        self.assertEqual(exported.name, f'POST {safe_path}')
+        self.assertEqual(exported.attributes['url.full'], f'https://example.test{safe_path}')
+        self.assertEqual(exported.attributes['http.url'], f'https://example.test{safe_path}')
+        self.assertEqual(exported.attributes['http.target'], safe_path)
+        self.assertEqual(exported.attributes['url.path'], safe_path)
+
     def test_redacts_credentials_and_direct_identifiers(self):
         result = redact_text(
-            'email=alice@example.com Bearer abc.def api_key=secret-value '
-            'DNI 12345678Z phone +34 600 123 456'
+            'email=alice@example.com Bearer abc.def api_key=secret-value DNI 12345678Z phone +34 600 123 456'
         )
         self.assertNotIn('alice@example.com', result)
         self.assertNotIn('abc.def', result)
@@ -135,7 +181,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertEqual(exported.events[0].attributes, {'exception.type': 'ValueError'})
 
     def test_chat_span_captures_redacted_user_and_assistant_text_only(self):
-        provider = TracerProvider()
+        provider = TracerProvider(sampler=ALWAYS_ON)
         downstream = InMemorySpanExporter()
         provider.add_span_processor(SimpleSpanProcessor(RedactingSpanExporter(downstream)))
         span = provider.get_tracer('test').start_span('chat', attributes={})
@@ -157,7 +203,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertNotIn('function_call', str(exported.attributes))
 
     def test_files_suppress_input_capture(self):
-        provider = TracerProvider()
+        provider = TracerProvider(sampler=ALWAYS_ON)
         downstream = InMemorySpanExporter()
         provider.add_span_processor(SimpleSpanProcessor(RedactingSpanExporter(downstream)))
         span = provider.get_tracer('test').start_span('chat')
@@ -166,7 +212,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertNotIn('llm.input_messages.0.message.content', downstream.get_finished_spans()[0].attributes)
 
     def test_stream_span_lives_until_consumed_and_captures_final_text(self):
-        provider = TracerProvider()
+        provider = TracerProvider(sampler=ALWAYS_ON)
         downstream = InMemorySpanExporter()
         provider.add_span_processor(SimpleSpanProcessor(RedactingSpanExporter(downstream)))
         span = provider.get_tracer('test').start_span('chat')
@@ -187,7 +233,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertNotIn('alice@example.com', exported.attributes['llm.output_messages.0.message.content'])
 
     def test_stream_error_ends_span_without_exporting_exception_text(self):
-        provider = TracerProvider()
+        provider = TracerProvider(sampler=ALWAYS_ON)
         downstream = InMemorySpanExporter()
         provider.add_span_processor(SimpleSpanProcessor(RedactingSpanExporter(downstream)))
         span = provider.get_tracer('test').start_span('chat')
@@ -212,7 +258,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertNotIn('secret-value', str(exported))
 
     def test_stream_provider_error_marks_span_as_error(self):
-        provider = TracerProvider()
+        provider = TracerProvider(sampler=ALWAYS_ON)
         downstream = InMemorySpanExporter()
         provider.add_span_processor(SimpleSpanProcessor(RedactingSpanExporter(downstream)))
         span = provider.get_tracer('test').start_span('chat')
@@ -230,8 +276,114 @@ class TelemetryPrivacyTests(unittest.TestCase):
         exported = downstream.get_finished_spans()[0]
         self.assertEqual(exported.status.status_code, StatusCode.ERROR)
 
+    def test_stream_inspection_bounds_memory_and_recovers_after_oversized_lines(self):
+        provider = TracerProvider(sampler=ALWAYS_ON)
+        downstream = InMemorySpanExporter()
+        provider.add_span_processor(SimpleSpanProcessor(RedactingSpanExporter(downstream)))
+        span = provider.get_tracer('test').start_span('chat')
+        fragment = b'x' * 1024
+        huge_chunk = b'x' * (4 * 1024 * 1024)
+        error = b'{"error":{"message":"provider failed"}}'
+
+        async def body():
+            yield b'data: {"arguments":"'
+            for _ in range(4096):
+                yield fragment
+            # This suffix belongs to the oversized line, not a new event.
+            yield error + b'\n'
+            yield huge_chunk
+            yield b'\n'
+            yield b'data: ' + error[:12]
+            yield error[12:] + b'\r\n\n'
+
+        response = StreamingResponse(body())
+        ctx = {}
+        trace_streaming_chat_response(response, span, ctx)
+
+        async def consume():
+            expected = body()
+            async for chunk in response.body_iterator:
+                self.assertEqual(chunk, await anext(expected))
+                if chunk == error + b'\n':
+                    self.assertFalse(ctx.get('response_error'))
+
+        loads = json.loads
+        inspected_sizes = []
+
+        def inspect_line(line):
+            inspected_sizes.append(len(line))
+            return loads(line)
+
+        tracemalloc.start()
+        try:
+            with patch('open_webui.utils.telemetry.privacy.json.loads', side_effect=inspect_line):
+                asyncio.run(consume())
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, 512 * 1024)
+        self.assertLessEqual(max(inspected_sizes), 64 * 1024)
+        exported = downstream.get_finished_spans()[0]
+        self.assertTrue(exported.attributes['openinference.stream.inspection_truncated'])
+        self.assertEqual(exported.status.status_code, StatusCode.ERROR)
+
+    def test_fragmented_stream_formats_and_unterminated_final_error(self):
+        for prefix in (b'data: ', b''):
+            with self.subTest(prefix=prefix):
+                provider = TracerProvider(sampler=ALWAYS_ON)
+                downstream = InMemorySpanExporter()
+                provider.add_span_processor(SimpleSpanProcessor(RedactingSpanExporter(downstream)))
+                span = provider.get_tracer('test').start_span('chat')
+                payload = prefix + json.dumps({'error': 'falló'}, ensure_ascii=False).encode()
+
+                async def body():
+                    for byte in payload:
+                        yield bytes([byte])
+
+                response = StreamingResponse(body())
+                trace_streaming_chat_response(response, span, {})
+
+                async def consume():
+                    return b''.join([chunk async for chunk in response.body_iterator])
+
+                self.assertEqual(asyncio.run(consume()), payload)
+                exported = downstream.get_finished_spans()[0]
+                self.assertEqual(exported.status.status_code, StatusCode.ERROR)
+
+    def test_stream_inspection_limit_counts_utf8_bytes_and_handles_string_chunks(self):
+        for size in (65535, 65536, 65537):
+            with self.subTest(size=size):
+                provider = TracerProvider(sampler=ALWAYS_ON)
+                downstream = InMemorySpanExporter()
+                provider.add_span_processor(SimpleSpanProcessor(downstream))
+                span = provider.get_tracer('test').start_span('chat')
+                prefix, suffix = '{"error":"', '"}'
+                padding = size - len(prefix) - len(suffix)
+                line = prefix + 'é' * (padding // 2) + 'x' * (padding % 2) + suffix
+                self.assertEqual(len(line.encode()), size)
+                chunks = [line[:100], line[100:], '\n', 'data: [DONE]\n\n']
+
+                async def body():
+                    for chunk in chunks:
+                        yield chunk
+
+                response = StreamingResponse(body())
+                ctx = {}
+                trace_streaming_chat_response(response, span, ctx)
+
+                async def consume():
+                    return [chunk async for chunk in response.body_iterator]
+
+                self.assertEqual(asyncio.run(consume()), chunks)
+                exported = downstream.get_finished_spans()[0]
+                self.assertEqual(bool(ctx.get('response_error')), size <= 65536)
+                self.assertEqual(
+                    bool(exported.attributes.get('openinference.stream.inspection_truncated')),
+                    size > 65536,
+                )
+
     def test_stream_cancellation_marks_and_ends_span(self):
-        provider = TracerProvider()
+        provider = TracerProvider(sampler=ALWAYS_ON)
         downstream = InMemorySpanExporter()
         provider.add_span_processor(SimpleSpanProcessor(RedactingSpanExporter(downstream)))
         span = provider.get_tracer('test').start_span('chat')
