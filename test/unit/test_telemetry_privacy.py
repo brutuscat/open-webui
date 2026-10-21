@@ -24,6 +24,36 @@ from starlette.responses import StreamingResponse
 
 
 class TelemetryPrivacyTests(unittest.TestCase):
+    def test_parameterizes_user_uuid_paths_across_export_locations(self):
+        user_id = '9f47bd16-724e-4c56-9e72-59f29734bc01'
+        for prefix in ('/api/v1/users/', '/api/v1/chats/list/user/', '/api/v1/channels/users/', '/scim/v2/Users/'):
+            for suffix in ('', '/info', '/profile/image'):
+                with self.subTest(prefix=prefix, suffix=suffix):
+                    path = prefix + user_id + suffix
+                    expected = prefix + '{id}' + suffix
+                    downstream = InMemorySpanExporter()
+                    source = ReadableSpan(
+                        name='GET ' + path,
+                        attributes={
+                            'url.full': 'https://example.test' + path + '?code=private',
+                            'http.url': 'https://example.test' + path,
+                            'url.path': path,
+                            'http.target': path + '?code=private',
+                            'paths': [path],
+                        },
+                    )
+                    RedactingSpanExporter(downstream).export((source,))
+                    exported = downstream.get_finished_spans()[0]
+                    self.assertEqual(exported.name, 'GET ' + expected)
+                    self.assertEqual(exported.attributes['url.full'], 'https://example.test' + expected)
+                    self.assertEqual(exported.attributes['http.url'], 'https://example.test' + expected)
+                    self.assertEqual(exported.attributes['url.path'], expected)
+                    self.assertEqual(exported.attributes['http.target'], expected)
+                    self.assertNotIn(user_id, str(exported.attributes))
+        self.assertEqual(
+            safe_url('https://example.test/api/v1/users/search'), 'https://example.test/api/v1/users/search'
+        )
+
     def test_redacts_prefixed_quoted_secret_keys(self):
         secrets = {
             'OPENAI_API_KEY': 'opaque-live-credential',

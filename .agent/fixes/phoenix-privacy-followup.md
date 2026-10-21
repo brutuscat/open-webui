@@ -48,3 +48,17 @@ A temporary Phoenix 20.23.0 server ran locally with authentication, product tele
 Two synthetic spans were sent through the production `RedactingSpanExporter`, one with the HTTP OTLP exporter and one with the gRPC OTLP exporter. `capture_chat_span` and the production streaming wrapper provided the input/error attributes. Phoenix's REST endpoint `/v1/projects/privacy-followup-synthetic/spans` returned both spans. Readback assertions confirmed both ERROR statuses and absence of synthetic API credentials, webhook tokens, query credentials, and the synthetic client IPv6 address. The webhook path was parameterized. The temporary server was stopped afterward.
 
 This proves local synthetic export, receipt, and sanitized readback over both transports. It does not prove a deployed Open WebUI-to-Phoenix integration, authenticated remote ingestion, real provider calls, frontend behavior, Python 3.11 compatibility, or production-load behavior. Pattern-based redaction still cannot guarantee removal of arbitrary sensitive text.
+
+## Second review: request filters and URL user identifiers
+
+Reviewed base: `046c12d377161eeb1b783eeff8f6f7bc30929d92`.
+
+Two further P1 issues reproduced: a request-stage plugin could redact/remove input after the earlier snapshot, and canonical user UUIDs survived inside URL paths despite identity attributes being dropped.
+
+Request filters keep their existing position after context assembly and run once. Compare the last user turn and user-turn counts before/after that stage. If a direct, unaugmented turn is rewritten without changing turn counts, capture the final filtered copy. If assembled context was rewritten, or user turns were added/removed, suppress input capture. This avoids stale pre-filter text, RAG leakage, and accidentally exporting an earlier turn when the latest is deleted, including duplicate consecutive turns. Unchanged request-stage input retains the isolated pre-context snapshot.
+
+The text sanitizer now parameterizes canonical UUID path segments as `{id}` across span names, URLs, legacy HTTP targets, stable path attributes, and list-valued attributes. The regression covers user, chat-user-list, channel-user, and SCIM paths, including trailing subpaths, and checks that static `/users/search` is preserved. This remains pattern-based redaction; it does not establish removal of arbitrary opaque identifiers.
+
+The new tests failed at the reviewed base. Final pytest discovery passed 26 tests and 32 subtests; unittest discovery passed 26 tests. The original concurrency, redaction, streaming-resource, and cancellation regressions remain included. Repository-wide Ruff formatting/CI logic checks, changed-module compilation, and whitespace checks passed. The request-filter regression executes production coroutines with service stubs and deterministic overlap, verifies that request filters still see assembled RAG context, and covers redaction, removing all turns, deleting the latest turn (including duplicates), and no-op filters, both with and without RAG.
+
+The real local Phoenix HTTP/gRPC canary was repeated with a synthetic user UUID in `url.path`. Both spans were received, their user paths contained `/api/v1/users/{id}/profile/image`, and readback contained no synthetic UUID. The first retry exceeded a 20-second server-start deadline before export; a repeat with a 50-second startup allowance passed. This remains a local synthetic transport check, not a deployed application/provider test.

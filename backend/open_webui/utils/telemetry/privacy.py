@@ -29,6 +29,7 @@ _PHONE = re.compile(r'(?<!\w)(?:\+?\d[\d(). -]{7,}\d)(?!\w)')
 _SPANISH_ID = re.compile(r'(?i)\b(?:\d{8}[A-Z]|[XYZ]\d{7}[A-Z])\b')
 _IPV4 = re.compile(r'(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])')
 _WEBHOOK_PATH = re.compile(r'(/api/v1/channels/webhooks/)[^/?#\s]+/[^/?#\s]+')
+_UUID_PATH_PARAMETER = re.compile(r'(?i)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=/|[?#\s]|$)')
 _MAX_INSPECTED_STREAM_LINE_BYTES = 64 * 1024
 _SENSITIVE_ATTRIBUTE = re.compile(
     r'(?i)(?:^client\.user\.|(?:^|\.)(?:user\.(?:id|email|name|role)|enduser\.id)'
@@ -45,6 +46,7 @@ def redact_text(value: str) -> str:
 
     # Webhook authentication lives in the path, including in HTTP span names.
     value = _WEBHOOK_PATH.sub(r'\1{webhook_id}/{token}', value)
+    value = _UUID_PATH_PARAMETER.sub('/{id}', value)
     value = _QUOTED_SECRET_ASSIGNMENT.sub(
         lambda match: (
             f'{match.group("key_quote")}{match.group("key")}{match.group("key_quote")}'

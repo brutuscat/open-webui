@@ -3105,6 +3105,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         )
 
     if ENABLE_PLUGINS:
+        # Request filters see assembled context. Keep their final direct input
+        # only when it is still separable from that context; otherwise omit it.
+        user_message_before_request = copy.deepcopy(get_last_user_message_item(form_data.get('messages') or []))
+        user_turns_before_request = sum(
+            isinstance(message, dict) and message.get('role') == 'user' for message in form_data.get('messages') or []
+        )
         try:
             form_data, _ = await process_filter_functions(
                 request=request,
@@ -3114,6 +3120,22 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data=form_data,
                 extra_params=extra_params,
             )
+            user_message_after_request = get_last_user_message_item(form_data.get('messages') or [])
+            user_turns_after_request = sum(
+                isinstance(message, dict) and message.get('role') == 'user'
+                for message in form_data.get('messages') or []
+            )
+            if (
+                user_message_after_request != user_message_before_request
+                or user_turns_after_request != user_turns_before_request
+            ):
+                telemetry_user_message = (
+                    copy.deepcopy(user_message_after_request)
+                    if telemetry_user_message is not None
+                    and user_message_before_request == telemetry_user_message
+                    and user_turns_before_request == user_turns_after_request
+                    else None
+                )
         except Exception as e:
             raise Exception(f'{e}')
 

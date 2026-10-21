@@ -37,6 +37,15 @@ def load_coroutine(path, name, dependencies):
 
 class TelemetryChatIsolationTests(unittest.TestCase):
     def test_concurrent_models_export_their_own_post_inlet_snapshot_before_rag(self):
+        self.check_fanout()
+
+    def test_request_filters_redact_or_remove_input_without_exposing_rag(self):
+        for rag in (False, True):
+            for action in ('redact', 'remove', 'drop_last', 'drop_duplicate', 'unchanged'):
+                with self.subTest(rag=rag, action=action):
+                    self.check_fanout(rag=rag, request_action=action)
+
+    def check_fanout(self, rag=True, request_action=None):
         async def run():
             downstream = InMemorySpanExporter()
             provider = TracerProvider(sampler=ALWAYS_ON)
@@ -51,10 +60,18 @@ class TelemetryChatIsolationTests(unittest.TestCase):
             async def inlet(_request, form_data, _user, _models):
                 model_id = form_data['model']
                 content = 'filtered by DLP' if model_id == 'dlp' else 'private unfiltered prompt'
-                return {
-                    **form_data,
-                    'messages': [] if model_id == 'removed' else [{'role': 'user', 'content': content}],
-                }
+                messages = [] if model_id == 'removed' else [{'role': 'user', 'content': content}]
+                if messages and request_action in ('drop_last', 'drop_duplicate'):
+                    messages.insert(
+                        0,
+                        {
+                            'role': 'user',
+                            'content': content
+                            if request_action == 'drop_duplicate'
+                            else 'private earlier conversation',
+                        },
+                    )
+                return {**form_data, 'messages': messages}
 
             async def files(_request, form_data, _extra, _user):
                 # All snapshots must have been taken before any model returns.
@@ -62,7 +79,7 @@ class TelemetryChatIsolationTests(unittest.TestCase):
                 if len(arrived) == len(models):
                     snapshots_ready.set()
                 await snapshots_ready.wait()
-                return form_data, {'sources': [{'source': {'name': 'retrieved document'}}]}
+                return form_data, {'sources': [{'source': {'name': 'retrieved document'}}] if rag else []}
 
             async def inject_rag(_request, messages, _sources, _prompt):
                 messages[-1]['content'] = 'private retrieved document body'
@@ -71,10 +88,26 @@ class TelemetryChatIsolationTests(unittest.TestCase):
             def last_user(messages):
                 return next((message for message in reversed(messages) if message.get('role') == 'user'), None)
 
+            async def filters(**kwargs):
+                form_data = kwargs['form_data']
+                if kwargs['filter_type'] == 'request':
+                    if rag and last_user(form_data['messages']):
+                        self.assertEqual(last_user(form_data['messages'])['content'], 'private retrieved document body')
+                    if request_action == 'remove':
+                        form_data['messages'] = []
+                    elif request_action in ('drop_last', 'drop_duplicate') and form_data['messages']:
+                        form_data['messages'].pop()
+                    elif request_action == 'redact' and last_user(form_data['messages']):
+                        last_user(form_data['messages'])['content'] = 'request filtered for ' + form_data['model']
+                return form_data, {}
+
             dependencies = {
                 'copy': copy,
                 'log': logging.getLogger(__name__),
-                'ENABLE_PLUGINS': False,
+                'ENABLE_PLUGINS': request_action is not None,
+                'get_filter_context': lambda request: None,
+                'get_filter_functions': AsyncMock(return_value=['test-filter']),
+                'process_filter_functions': filters,
                 'UserModel': type('UserModel', (), {}),
                 'Config': SimpleNamespace(get=AsyncMock(return_value=None)),
                 'apply_params_to_form_data': lambda body, model: body,
@@ -136,8 +169,15 @@ class TelemetryChatIsolationTests(unittest.TestCase):
             spans = {span.attributes['llm.model_name']: span for span in downstream.get_finished_spans()}
             self.assertEqual(set(spans), set(models))
             input_key = 'llm.input_messages.0.message.content'
-            self.assertEqual(spans['dlp'].attributes[input_key], 'filtered by DLP')
-            self.assertEqual(spans['raw'].attributes[input_key], 'private unfiltered prompt')
+            if request_action in ('remove', 'drop_last', 'drop_duplicate') or (request_action == 'redact' and rag):
+                for span in spans.values():
+                    self.assertNotIn(input_key, span.attributes)
+            elif request_action == 'redact':
+                self.assertEqual(spans['dlp'].attributes[input_key], 'request filtered for dlp')
+                self.assertEqual(spans['raw'].attributes[input_key], 'request filtered for raw')
+            else:
+                self.assertEqual(spans['dlp'].attributes[input_key], 'filtered by DLP')
+                self.assertEqual(spans['raw'].attributes[input_key], 'private unfiltered prompt')
             self.assertNotIn(input_key, spans['removed'].attributes)
             for span in spans.values():
                 self.assertEqual(span.status.status_code, StatusCode.OK)
