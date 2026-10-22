@@ -2643,6 +2643,11 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         except Exception as e:
             raise Exception(f'{e}')
 
+    # Preserve the direct turn after inlet filters but before memory, search,
+    # file, and citation context can be injected into the provider messages.
+    # Return it directly: fan-out tasks share request.state, but not this local.
+    telemetry_user_message = copy.deepcopy(get_last_user_message_item(form_data.get('messages') or []))
+
     features = form_data.pop('features', None) or {}
     extra_params['__features__'] = features
     if features:
@@ -3100,6 +3105,12 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         )
 
     if ENABLE_PLUGINS:
+        # Request filters see assembled context. Keep their final direct input
+        # only when it is still separable from that context; otherwise omit it.
+        user_message_before_request = copy.deepcopy(get_last_user_message_item(form_data.get('messages') or []))
+        user_turns_before_request = sum(
+            isinstance(message, dict) and message.get('role') == 'user' for message in form_data.get('messages') or []
+        )
         try:
             form_data, _ = await process_filter_functions(
                 request=request,
@@ -3109,12 +3120,28 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data=form_data,
                 extra_params=extra_params,
             )
+            user_message_after_request = get_last_user_message_item(form_data.get('messages') or [])
+            user_turns_after_request = sum(
+                isinstance(message, dict) and message.get('role') == 'user'
+                for message in form_data.get('messages') or []
+            )
+            if (
+                user_message_after_request != user_message_before_request
+                or user_turns_after_request != user_turns_before_request
+            ):
+                telemetry_user_message = (
+                    copy.deepcopy(user_message_after_request)
+                    if telemetry_user_message is not None
+                    and user_message_before_request == telemetry_user_message
+                    and user_turns_before_request == user_turns_after_request
+                    else None
+                )
         except Exception as e:
             raise Exception(f'{e}')
 
     form_data = normalize_messages_for_model(form_data)
 
-    return form_data, metadata, events
+    return form_data, metadata, events, telemetry_user_message
 
 
 async def get_event_emitter_and_caller(metadata):
@@ -3992,6 +4019,26 @@ async def outlet_filter_handler(ctx):
         else:
             outlet_result = outlet_data
 
+        assistant_result = next(
+            (
+                message
+                for message in (outlet_result or {}).get('messages') or []
+                if message.get('id') == message_id and message.get('role') == 'assistant'
+            ),
+            None,
+        )
+        # A removed current turn must not retain raw output or select an older turn.
+        # Keep an explicit empty value so tracing cannot fall back to the raw response.
+        ctx['assistant_message'] = (
+            {
+                **(ctx.get('assistant_message') or {}),
+                **assistant_result,
+                'content': assistant_result.get('content') or get_output_text(assistant_result.get('output')),
+            }
+            if assistant_result is not None
+            else None
+        )
+
         if outlet_result and outlet_result.get('messages'):
             if not is_unsaved_chat and messages_map:
                 for message in outlet_result['messages']:
@@ -4042,6 +4089,8 @@ async def non_streaming_chat_response_handler(response, ctx):
     response, response_data = get_response_data(response)
     if response_data is None:
         return response
+    if 'error' in response_data:
+        ctx['response_error'] = True
 
     chat_id = metadata.get('chat_id') or ''
     save_to_chat = is_saved_chat_id(chat_id)
@@ -4816,6 +4865,7 @@ async def streaming_chat_response_handler(response, ctx):
                                 raw_obj = JSONCodec.loads(data)
                                 raw_error = raw_obj.get('error') if isinstance(raw_obj, dict) else None
                                 if raw_error:
+                                    ctx['response_error'] = True
                                     if save_to_chat:
                                         try:
                                             await Chats.upsert_message_to_chat_by_id_and_message_id(
@@ -4929,6 +4979,7 @@ async def streaming_chat_response_handler(response, ctx):
                                             response_metadata['usage'] = usage
 
                                         if response_metadata.get('error'):
+                                            ctx['response_error'] = True
                                             await event_emitter(
                                                 {
                                                     'type': 'chat:completion',
@@ -4966,6 +5017,7 @@ async def streaming_chat_response_handler(response, ctx):
                                     if not choices:
                                         error = data.get('error', {})
                                         if error:
+                                            ctx['response_error'] = True
                                             log.error('Provider returned error (streaming): %s', error)
                                             if save_to_chat:
                                                 try:

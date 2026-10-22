@@ -9,6 +9,7 @@ from aiohttp import (
 )
 from fastapi import FastAPI, status
 from open_webui.utils.telemetry.constants import SPAN_REDIS_TYPE, SpanAttributes
+from open_webui.utils.telemetry.privacy import safe_url
 from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.httpx import (
@@ -36,10 +37,11 @@ def requests_hook(span: Span, request: PreparedRequest):
     Http Request Hook
     """
 
-    span.update_name(f'{request.method} {request.url}')
+    url = safe_url(request.url)
+    span.update_name(f'{request.method} {url}')
     span.set_attributes(
         attributes={
-            SpanAttributes.HTTP_URL: request.url,
+            SpanAttributes.HTTP_URL: url,
             SpanAttributes.HTTP_METHOD: request.method,
         }
     )
@@ -100,10 +102,11 @@ def httpx_request_hook(span: Span, request: RequestInfo):
     HTTPX Request Hook
     """
 
-    span.update_name(f'{request.method.decode()} {str(request.url)}')
+    url = safe_url(str(request.url))
+    span.update_name(f'{request.method.decode()} {url}')
     span.set_attributes(
         attributes={
-            SpanAttributes.HTTP_URL: str(request.url),
+            SpanAttributes.HTTP_URL: url,
             SpanAttributes.HTTP_METHOD: request.method.decode(),
         }
     )
@@ -139,10 +142,11 @@ def aiohttp_request_hook(span: Span, request: TraceRequestStartParams):
     Aiohttp Request Hook
     """
 
-    span.update_name(f'{request.method} {str(request.url)}')
+    url = safe_url(str(request.url))
+    span.update_name(f'{request.method} {url}')
     span.set_attributes(
         attributes={
-            SpanAttributes.HTTP_URL: str(request.url),
+            SpanAttributes.HTTP_URL: url,
             SpanAttributes.HTTP_METHOD: request.method,
         }
     )
