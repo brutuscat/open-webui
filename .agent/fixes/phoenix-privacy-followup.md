@@ -62,3 +62,23 @@ The text sanitizer now parameterizes canonical UUID path segments as `{id}` acro
 The new tests failed at the reviewed base. Final pytest discovery passed 26 tests and 32 subtests; unittest discovery passed 26 tests. The original concurrency, redaction, streaming-resource, and cancellation regressions remain included. Repository-wide Ruff formatting/CI logic checks, changed-module compilation, and whitespace checks passed. The request-filter regression executes production coroutines with service stubs and deterministic overlap, verifies that request filters still see assembled RAG context, and covers redaction, removing all turns, deleting the latest turn (including duplicates), and no-op filters, both with and without RAG.
 
 The real local Phoenix HTTP/gRPC canary was repeated with a synthetic user UUID in `url.path`. Both spans were received, their user paths contained `/api/v1/users/{id}/profile/image`, and readback contained no synthetic UUID. The first retry exceeded a 20-second server-start deadline before export; a repeat with a 50-second startup allowance passed. This remains a local synthetic transport check, not a deployed application/provider test.
+
+## Third review: hostless URIs, private keys, and gRPC headers (2026-10-22)
+
+Reviewed base: `af630aaf28575a1febe32c5ed17e838625fb9427`. All three new comments were P1 and reproduced:
+
+- Hostless `file:///` and `sqlite:///` URIs re-entered embedded-URL sanitization indefinitely. The fallback now disables that pass, preserves URI syntax, removes query/fragment data, and sanitizes path components. The regression exports a two-span batch for both URI schemes and checks an encoded email path.
+- `private_key` assignments and standalone PEM private-key blocks survived text sanitization. Private-key assignments now use the existing secret-value redaction, and PEM private-key blocks (including truncated blocks) are removed before other text processing. Tests cover service-account JSON, assignments, YAML, RSA/EC/OpenSSH/encrypted PEM variants, and preservation of public-key blocks.
+- Decoded OTLP header names retained mixed casing, breaking gRPC metadata and case-insensitive precedence. Normalize names to lowercase before merging generic and trace-specific headers. The regression covers percent-encoded names and overrides of Basic authentication.
+
+Each of the three new regression tests failed when run against the reviewed privacy/setup modules. The final full telemetry suite passed **33 tests** with Python 3.11.13 and pinned OpenTelemetry 1.42.1. This also runs the earlier YAML, Basic-auth, connection-URL, encoded-path, concurrency, and streaming regressions.
+
+The runtime's existing dependencies were used without modifying the service environment. Test subprocesses set `DATA_DIR` to a fresh temporary directory, `DATABASE_URL` to a SQLite file in that directory, `WEBUI_AUTH=False`, `ENABLE_DB_MIGRATIONS=False`, `ENABLE_OTEL_TRACES=False`, `ENABLE_OTEL_METRICS=False`, and `PYTHONPATH=backend`:
+
+```powershell
+& 'C:\ProgramData\OpenWebUI\runtime\venv-0.12.3-harmony-20261016\Scripts\python.exe' -X utf8 -m unittest discover -s test/unit -p 'test_telemetry*.py' -v
+```
+
+The `-X utf8` flag is required for the existing coroutine tests' source-file reads on Windows. An in-memory SQLite URL is unsuitable for the application's pool options; the isolated file URL above works.
+
+A separate loopback OTLP gRPC receiver accepted a synthetic span sent by the pinned exporter with headers built by the production helper. Receiver assertions confirmed lowercase `authorization`/`x-api-key` and trace-specific values overriding generic/Basic credentials. The receiver was stopped afterward. This validates local gRPC transport, not deployed Phoenix ingestion. Ruff formatting and the repository's CI logic checks on changed Python files, compilation, and `git diff --check` passed.

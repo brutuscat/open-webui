@@ -14,23 +14,27 @@ from opentelemetry.trace import Status, StatusCode
 _SECRET_KEY = (
     r'(?:[A-Za-z0-9_.-]*[_-])?'
     r'(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|'
-    r'secret(?:[_ -]?access)?[_ -]?key|password|passwd|secret|token)'
+    r'secret(?:[_ -]?access)?[_ -]?key|private[_ -]?key|password|passwd|secret|token)'
 )
 _QUOTED_SECRET_ASSIGNMENT = re.compile(
-    rf'''(?i)(?<![A-Za-z0-9_-])(?P<key_quote>["']?)(?P<key>{_SECRET_KEY})'''
-    r'''(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<quoted>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')'''
+    rf"""(?i)(?<![A-Za-z0-9_-])(?P<key_quote>["']?)(?P<key>{_SECRET_KEY})"""
+    r"""(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<quoted>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"""
 )
 _SECRET_ASSIGNMENT = re.compile(
-    rf'''(?i)(?<![A-Za-z0-9_-])(?P<key_quote>["']?)(?P<key>{_SECRET_KEY})'''
-    r'''(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<value_quote>["']?)[^\s,;\]\}"']+'''
+    rf"""(?i)(?<![A-Za-z0-9_-])(?P<key_quote>["']?)(?P<key>{_SECRET_KEY})"""
+    r"""(?P=key_quote)(?P<separator>\s*[:=]\s*)(?P<value_quote>["']?)[^\s,;\]\}"']+"""
 )
 _YAML_SECRET_ASSIGNMENT = re.compile(
-    rf'''(?i)^(?P<indent>[ \t]*)(?P<key_quote>["']?)(?P<key>{_SECRET_KEY})'''
-    r'''(?P=key_quote)(?P<separator>[ \t]*:[ \t]*)(?P<value>.*)$'''
+    rf"""(?i)^(?P<indent>[ \t]*)(?P<key_quote>["']?)(?P<key>{_SECRET_KEY})"""
+    r"""(?P=key_quote)(?P<separator>[ \t]*:[ \t]*)(?P<value>.*)$"""
 )
 _YAML_BLOCK_SCALAR = re.compile(r'^[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:[ \t]+#.*)?$')
 _BEARER = re.compile(r'(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+')
 _BASIC_AUTH = re.compile(r'(?i)\bBasic\s+[A-Za-z0-9+/]+={0,2}')
+_PEM_PRIVATE_KEY = re.compile(
+    r'-----BEGIN (?P<kind>(?:[A-Z0-9]+ )*PRIVATE KEY)-----.*?(?:-----END (?P=kind)-----|$)',
+    re.DOTALL | re.IGNORECASE,
+)
 _JWT = re.compile(r'\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b')
 _EMAIL = re.compile(r'(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b')
 _CARD = re.compile(r'(?<!\d)(?:\d[ -]?){13,19}(?!\d)')
@@ -40,7 +44,7 @@ _IPV4 = re.compile(r'(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])')
 _WEBHOOK_PATH = re.compile(r'(/api/v1/channels/webhooks/)[^/?#\s]+/[^/?#\s]+')
 _UUID_PATH_PARAMETER = re.compile(r'(?i)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?=/|[?#\s]|$)')
 _PERCENT_ENCODED_PATH_SEGMENT = re.compile(r'/(?P<segment>[^/?#\s]+)')
-_EMBEDDED_URL = re.compile(r'''(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"']+''')
+_EMBEDDED_URL = re.compile(r"""(?i)\b[a-z][a-z0-9+.-]*://[^\s<>"']+""")
 _PATH_QUOTE_SAFE = ":@!$&'()*+,;=-._~"
 _MAX_INSPECTED_STREAM_LINE_BYTES = 64 * 1024
 _SENSITIVE_ATTRIBUTE = re.compile(
@@ -67,8 +71,8 @@ def _redact_yaml_secret_scalars(value: str) -> str:
             continue
 
         redacted_lines.append(
-            f"{match.group('indent')}{match.group('key_quote')}{match.group('key')}"
-            f"{match.group('key_quote')}{match.group('separator')}[REDACTED]{line_ending}"
+            f'{match.group("indent")}{match.group("key_quote")}{match.group("key")}'
+            f'{match.group("key_quote")}{match.group("separator")}[REDACTED]{line_ending}'
         )
         if not _YAML_BLOCK_SCALAR.fullmatch(match.group('value').strip()):
             index += 1
@@ -85,6 +89,7 @@ def _redact_yaml_secret_scalars(value: str) -> str:
 
 
 def _redact_text(value: str, *, sanitize_embedded_urls: bool) -> str:
+    value = _PEM_PRIVATE_KEY.sub('[REDACTED:PRIVATE_KEY]', value)
     # Strip URL userinfo before email and secret patterns can partially rewrite it.
     if sanitize_embedded_urls:
         value = _EMBEDDED_URL.sub(lambda match: safe_url(match.group(0)), value)
@@ -133,7 +138,7 @@ def _redact_encoded_path_segment(match):
     redacted = _redact_text(decoded, sanitize_embedded_urls=False)
     if redacted == decoded:
         return match.group(0)
-    return f"/{quote(redacted, safe=_PATH_QUOTE_SAFE)}"
+    return f'/{quote(redacted, safe=_PATH_QUOTE_SAFE)}'
 
 
 def _redact_url_path(path: str) -> str:
@@ -147,7 +152,9 @@ def safe_url(value: str) -> str:
     try:
         parsed = urlsplit(value)
         if not parsed.scheme or not parsed.hostname:
-            return redact_text(value)
+            # Preserve hostless URI syntax without re-entering embedded-URL handling.
+            path = value.partition('?')[0].partition('#')[0]
+            return _redact_url_path(_redact_text(path, sanitize_embedded_urls=False))
         host = parsed.hostname
         if ':' in host:
             host = f'[{host}]'

@@ -24,6 +24,56 @@ from starlette.responses import StreamingResponse
 
 
 class TelemetryPrivacyTests(unittest.TestCase):
+    def test_hostless_uris_do_not_drop_exported_span_batches(self):
+        for uri in ('file:///home/user/data', 'sqlite:///tmp/app.db'):
+            with self.subTest(uri=uri):
+                self.assertEqual(safe_url(uri), uri)
+                downstream = InMemorySpanExporter()
+                RedactingSpanExporter(downstream).export(
+                    (
+                        ReadableSpan(name='first', attributes={'input.value': uri}),
+                        ReadableSpan(name='second', attributes={'http.url': uri}),
+                    )
+                )
+                spans = downstream.get_finished_spans()
+                self.assertEqual(len(spans), 2)
+                self.assertEqual(spans[0].attributes['input.value'], uri)
+                self.assertEqual(spans[1].attributes['http.url'], uri)
+        sanitized = safe_url('file:///home/alice%40example.com/data?token=opaque#private')
+        self.assertNotIn('alice', sanitized)
+        self.assertNotIn('opaque', sanitized)
+        self.assertNotIn('private', sanitized)
+
+    def test_redacts_private_key_assignments_and_pem_blocks(self):
+        for label in (
+            'PRIVATE KEY',
+            'RSA PRIVATE KEY',
+            'EC PRIVATE KEY',
+            'OPENSSH PRIVATE KEY',
+            'ENCRYPTED PRIVATE KEY',
+        ):
+            pem = f'-----BEGIN {label}-----\nsynthetic-key-material\n-----END {label}-----'
+            for text in (pem, json.dumps({'private_key': pem}), 'private_key: |\n  ' + pem.replace('\n', '\n  ')):
+                with self.subTest(label=label, text=text):
+                    self.assertNotIn('synthetic-key-material', redact_text(text))
+        for text in (
+            '{"private_key":"opaque-service-account-key"}',
+            'private_key=opaque-service-account-key',
+            '-----BEGIN PRIVATE KEY-----\nopaque-service-account-key',
+        ):
+            self.assertNotIn('opaque-service-account-key', redact_text(text))
+        public = '-----BEGIN PUBLIC KEY-----\npublic-material\n-----END PUBLIC KEY-----'
+        self.assertEqual(redact_text(public), public)
+
+    def test_trace_header_names_are_decoded_lowercase_and_override_case_insensitively(self):
+        headers = _build_trace_headers(
+            'user',
+            'password',
+            'Authorization=generic,%58-API-Key=generic-key',
+            'AUTHORIZATION=trace,x-api-key=trace-key',
+        )
+        self.assertEqual(headers, {'authorization': 'trace', 'x-api-key': 'trace-key'})
+
     def test_parameterizes_user_uuid_paths_across_export_locations(self):
         user_id = '9f47bd16-724e-4c56-9e72-59f29734bc01'
         for prefix in ('/api/v1/users/', '/api/v1/chats/list/user/', '/api/v1/channels/users/', '/scim/v2/Users/'):
@@ -152,9 +202,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
         self.assertIn('Basic [REDACTED]', result)
 
     def test_redacts_embedded_connection_url_userinfo(self):
-        result = redact_text(
-            'connection failed DATABASE_URL=postgresql://alice:live-password@db.example/app'
-        )
+        result = redact_text('connection failed DATABASE_URL=postgresql://alice:live-password@db.example/app')
         self.assertNotIn('alice', result)
         self.assertNotIn('live-password', result)
         self.assertIn('db.example/app', result)
@@ -165,9 +213,7 @@ class TelemetryPrivacyTests(unittest.TestCase):
             safe_url('https://example.test/users/alice%40example.com'),
             'https://example.test/users/%5BREDACTED:EMAIL%5D',
         )
-        attributes = safe_attributes(
-            {'http.url': 'https://example.test/users/alice%40example.com'}
-        )
+        attributes = safe_attributes({'http.url': 'https://example.test/users/alice%40example.com'})
         self.assertNotIn('alice%40example.com', attributes['http.url'])
 
     def test_drops_legacy_http_targets_and_client_ip_attributes(self):

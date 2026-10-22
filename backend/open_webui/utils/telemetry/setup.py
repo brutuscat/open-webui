@@ -54,7 +54,7 @@ def _build_trace_headers(
         for header in header_source.split(','):
             key, separator, value = header.partition('=')
             if separator and key.strip():
-                headers[unquote(key.strip())] = unquote(value.strip())
+                headers[unquote(key.strip()).lower()] = unquote(value.strip())
     return headers
 
 
