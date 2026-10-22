@@ -3,6 +3,7 @@
 import ast
 import asyncio
 import copy
+import json
 import logging
 import unittest
 from pathlib import Path
@@ -36,6 +37,100 @@ def load_coroutine(path, name, dependencies):
 
 
 class TelemetryChatIsolationTests(unittest.TestCase):
+    def test_outlet_removal_does_not_export_raw_or_historical_assistant_output(self):
+        cases = (
+            ([], None),
+            ([{'id': 'previous', 'role': 'assistant', 'content': 'private historical response'}], None),
+            ([{'id': 'current', 'role': 'assistant', 'content': ''}], None),
+            ([{'id': 'current', 'role': 'assistant', 'content': 'allowed response'}], 'allowed response'),
+        )
+        for messages, expected in cases:
+            for response_type in ('dict', 'json', 'stream'):
+                with self.subTest(messages=messages, response_type=response_type):
+                    asyncio.run(self.check_outlet_trace(messages, expected, response_type))
+
+    async def check_outlet_trace(self, messages, expected, response_type):
+        downstream = InMemorySpanExporter()
+        provider = TracerProvider(sampler=ALWAYS_ON)
+        provider.add_span_processor(SimpleSpanProcessor(downstream))
+        model = {'id': 'model'}
+        request = SimpleNamespace(state=SimpleNamespace(), app=SimpleNamespace(state=SimpleNamespace(MODELS={})))
+        form_data = {'model': 'model', 'messages': [{'role': 'user', 'content': 'prompt'}]}
+        metadata = {'message_id': 'current'}
+        ctx = {
+            'request': request,
+            'form_data': form_data,
+            'user': None,
+            'model': model,
+            'metadata': metadata,
+            'assistant_message': {'content': 'private original response'},
+        }
+        outlet = load_coroutine(
+            'backend/open_webui/utils/middleware.py',
+            'outlet_filter_handler',
+            {
+                'copy': copy,
+                'log': logging.getLogger(__name__),
+                'ENABLE_PLUGINS': True,
+                'get_filter_functions': AsyncMock(return_value=['outlet-filter']),
+                'get_sorted_filters': lambda *args: [],
+                'is_saved_chat_id': lambda chat_id: False,
+                'get_output_text': lambda output: '',
+                'UserModel': type('UserModel', (), {}),
+                'process_pipeline_outlet_filter': AsyncMock(side_effect=lambda request, data, user, models: data),
+                'process_filter_functions': AsyncMock(return_value=({'messages': messages}, {})),
+            },
+        )
+
+        async def process_response(response, context):
+            await outlet(context)
+            return response
+
+        body = {'choices': [{'message': {'content': 'private original response'}}]}
+        if response_type == 'stream':
+
+            async def stream():
+                yield b'data: {"choices":[{"delta":{"content":"private original response"}}]}\n\n'
+
+            response = StreamingResponse(stream(), media_type='text/event-stream')
+        else:
+            response = JSONResponse(body) if response_type == 'json' else body
+        process_chat = load_coroutine(
+            'backend/open_webui/main.py',
+            'process_chat',
+            {
+                'asyncio': asyncio,
+                'log': logging.getLogger(__name__),
+                'process_chat_payload': AsyncMock(return_value=(form_data, metadata, [], form_data['messages'][0])),
+                'drain_approved_tool_calls': AsyncMock(return_value=False),
+                'ENABLE_OTEL': True,
+                'ENABLE_OTEL_TRACES': True,
+                'trace': SimpleNamespace(get_tracer=provider.get_tracer, use_span=trace.use_span),
+                'SpanKind': SpanKind,
+                'Status': Status,
+                'StatusCode': StatusCode,
+                'capture_chat_span': capture_chat_span,
+                'capture_chat_output': capture_chat_output,
+                'trace_streaming_chat_response': trace_streaming_chat_response,
+                'StreamingResponse': StreamingResponse,
+                'JSONResponse': JSONResponse,
+                'JSONCodec': json,
+                'get_output_text': lambda output: '',
+                'chat_completion_handler': AsyncMock(return_value=response),
+                'build_chat_response_context': AsyncMock(return_value=ctx),
+                'process_chat_response': process_response,
+            },
+        )
+        result = await process_chat(request, form_data, None, metadata, model)
+        self.assertIs(result, response)
+        if response_type == 'stream':
+            async for _ in result.body_iterator:
+                pass
+        spans = downstream.get_finished_spans()
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0].status.status_code, StatusCode.OK)
+        self.assertEqual(spans[0].attributes.get('llm.output_messages.0.message.content'), expected)
+
     def test_concurrent_models_export_their_own_post_inlet_snapshot_before_rag(self):
         self.check_fanout()
 

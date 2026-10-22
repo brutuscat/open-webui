@@ -4019,25 +4019,27 @@ async def outlet_filter_handler(ctx):
         else:
             outlet_result = outlet_data
 
-        if outlet_result and outlet_result.get('messages'):
-            assistant_result = next(
-                (
-                    message
-                    for message in outlet_result['messages']
-                    if message.get('id') == message_id and message.get('role') == 'assistant'
-                ),
-                next(
-                    (message for message in reversed(outlet_result['messages']) if message.get('role') == 'assistant'),
-                    None,
-                ),
-            )
-            if assistant_result is not None:
-                ctx['assistant_message'] = {
-                    **ctx.get('assistant_message', {}),
-                    **assistant_result,
-                    'content': assistant_result.get('content') or get_output_text(assistant_result.get('output')),
-                }
+        assistant_result = next(
+            (
+                message
+                for message in (outlet_result or {}).get('messages') or []
+                if message.get('id') == message_id and message.get('role') == 'assistant'
+            ),
+            None,
+        )
+        # A removed current turn must not retain raw output or select an older turn.
+        # Keep an explicit empty value so tracing cannot fall back to the raw response.
+        ctx['assistant_message'] = (
+            {
+                **(ctx.get('assistant_message') or {}),
+                **assistant_result,
+                'content': assistant_result.get('content') or get_output_text(assistant_result.get('output')),
+            }
+            if assistant_result is not None
+            else None
+        )
 
+        if outlet_result and outlet_result.get('messages'):
             if not is_unsaved_chat and messages_map:
                 for message in outlet_result['messages']:
                     outlet_message_id = message.get('id')

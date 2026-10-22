@@ -1701,7 +1701,7 @@ async def chat_completion(
                 trace_streaming_chat_response(processed_response, llm_span, ctx)
             else:
                 assistant_message_for_trace = ctx.get('assistant_message')
-                if not assistant_message_for_trace and isinstance(processed_response, JSONResponse):
+                if 'assistant_message' not in ctx and isinstance(processed_response, JSONResponse):
                     try:
                         response_data = JSONCodec.loads(processed_response.body.decode('utf-8', 'replace'))
                     except (JSONCodec.JSONDecodeError, UnicodeDecodeError):

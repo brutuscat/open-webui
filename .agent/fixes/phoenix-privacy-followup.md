@@ -82,3 +82,13 @@ The runtime's existing dependencies were used without modifying the service envi
 The `-X utf8` flag is required for the existing coroutine tests' source-file reads on Windows. An in-memory SQLite URL is unsuitable for the application's pool options; the isolated file URL above works.
 
 A separate loopback OTLP gRPC receiver accepted a synthetic span sent by the pinned exporter with headers built by the production helper. Receiver assertions confirmed lowercase `authorization`/`x-api-key` and trace-specific values overriding generic/Basic credentials. The receiver was stopped afterward. This validates local gRPC transport, not deployed Phoenix ingestion. Ruff formatting and the repository's CI logic checks on changed Python files, compilation, and `git diff --check` passed.
+
+## Independent review: removed outlet turns (2026-10-22)
+
+Two fresh GPT-6.1 Sol reviewers at medium effort reviewed pinned head `04d0a7b4a998db5f09387c2dba8a16c38bc5971b` using the read-only `review-agent` skill. The full PR reviewer confirmed a P1: removing the current assistant from the outlet result retained its pre-filter snapshot, or selected an older assistant as a fallback. The new export path could therefore send content absent from the final filter result. Ordinary direct API output/usage omissions were confirmed as P2 by both reviewers.
+
+Select only the assistant matching the current message ID after outlet filters. If it is absent, explicitly set the context value to `None`. The non-streaming JSON fallback now runs only when the context has no assistant key, preserving that explicit suppression. Existing message delivery and persistence paths are unchanged; output capture is conservatively omitted if a filter discards the current message ID.
+
+A new regression runs the complete production outlet and chat coroutines with service stubs across dict, JSON, and streaming responses. It covers empty results, retained historical turns, empty current content, and a replacement current turn. It produced six failing subtests on the reviewed implementation and passes after the fix. All **34 telemetry tests** pass in the isolated Python 3.11.13 environment described above. Formatting, CI logic checks, compilation, and whitespace checks pass. The full PR reviewer independently inspected the integrated fix and reran all 34 tests without further findings. No production application/provider test was performed.
+
+The two GitHub P2 threads about direct API streaming accumulation and non-streaming dictionary capture remain deferred under the requested P0/P1 scope. They are acknowledged in their threads and remain open. Any future response fallback must preserve explicit outlet suppression and must not repopulate removed output from the raw provider response.
